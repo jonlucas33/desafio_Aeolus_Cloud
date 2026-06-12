@@ -27,12 +27,12 @@
   - Função `load_settings(path: Path) -> Settings` que carrega e valida o YAML
   - Teste: `tests/unit/test_config.py` — valida que settings.yaml carrega sem erros
 
-- [ ] **1.3 — Dataclasses canônicas (src/domain.py)**
+- [x] **1.3 — Dataclasses canônicas (src/domain.py)**
   - Implementar `Detection`, `Track`, `VehicleEvent` conforme especificado em `CLAUDE.md § Dataclasses`
   - `Track` deve calcular `centroid` automaticamente via `__post_init__`
   - Nenhuma dependência além de `numpy` e `dataclasses`
 
-- [ ] **1.4 — VideoCapture thread (src/capture/video_capture.py)**
+- [x] **1.4 — VideoCapture thread (src/capture/video_capture.py)**
   - Implementar classe `VideoCapture` conforme `ARCHITECTURE.md § 4.1`
   - Thread daemon com `threading.Event` para stop limpo
   - Frame drop quando `frame_queue` está cheia (descartar mais antigo)
