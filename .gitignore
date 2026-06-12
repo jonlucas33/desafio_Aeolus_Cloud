@@ -1,0 +1,36 @@
+# Modelos e dados (nunca commitar)
+models/*.pt
+data/inputs/
+data/outputs/
+*.db
+
+# Ambiente Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Variáveis de ambiente
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db

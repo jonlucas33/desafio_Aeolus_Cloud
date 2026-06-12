@@ -1,0 +1,31 @@
+video:
+  source: "data/inputs/video.mp4"
+  output: "data/outputs/result.mp4"
+  resize_width: 1280
+
+model:
+  weights: "models/yolov8s.pt"
+  confidence_threshold: 0.45
+  iou_threshold: 0.5
+  device: "cuda"
+  fp16: true
+
+tracking:
+  track_buffer: 30
+  min_box_area: 100
+
+counting:
+  line_points: [[0, 540], [1280, 540]]
+  direction: "top_to_bottom"
+  min_displacement_px: 5
+  class_vote_window: 15
+
+ocr:
+  enabled: true
+  min_bbox_area_ratio: 0.01
+  languages: ["pt", "en"]
+
+database:
+  backend: "sqlite"
+  sqlite_path: "data/outputs/events.db"
+  postgres_url: ""
