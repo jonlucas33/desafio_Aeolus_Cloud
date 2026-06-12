@@ -57,7 +57,7 @@
   - Teste: `tests/unit/test_bytetrack_wrapper.py` — mock de detecções sequenciais,
     verificar que track_id é mantido entre frames
 
-- [ ] **1.7 — Teste de integração Fase 1**
+- [x] **1.7 — Teste de integração Fase 1**
   - `tests/integration/test_pipeline_phase1.py`
   - Usar vídeo sintético de 30 frames (gerado com `np.zeros`) ou amostra curta do vídeo real
   - Verificar: frames sendo consumidos, detecções retornadas, tracks com IDs consistentes
