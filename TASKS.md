@@ -40,7 +40,7 @@
   - Teste: `tests/unit/test_video_capture.py` — mock `cv2.VideoCapture`, verificar que
     frames chegam na fila e que o stop funciona sem deadlock
 
-- [ ] **1.5 — YOLO Detector (src/detection/yolo_detector.py)**
+- [x] **1.5 — YOLO Detector (src/detection/yolo_detector.py)**
   - Implementar `YoloDetector` conforme `ARCHITECTURE.md § 4.2`
   - Filtrar apenas classes de veículos (car=2, motorcycle=3, bus=5, truck=7)
   - Converter resultado YOLO para `List[Detection]`
@@ -49,7 +49,7 @@
     Shape diferente causa realocação de memória GPU no primeiro frame real.
   - Teste: `tests/unit/test_yolo_detector.py` — mock do modelo, verificar filtragem de classes
 
-- [ ] **1.6 — ByteTrack Wrapper (src/tracking/bytetrack_wrapper.py)**
+- [x] **1.6 — ByteTrack Wrapper (src/tracking/bytetrack_wrapper.py)**
   - Implementar `ByteTrackWrapper` conforme `ARCHITECTURE.md § 4.3`
   - Usar `model.track()` com `tracker="bytetrack.yaml"` via Ultralytics, ou
     integrar `supervision.ByteTrack` diretamente

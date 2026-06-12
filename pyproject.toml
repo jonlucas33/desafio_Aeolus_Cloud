@@ -16,6 +16,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
     "numpy>=1.24",
+    "supervision>=0.18",
 ]
 
 [project.optional-dependencies]
@@ -31,3 +32,7 @@ include = ["src*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+filterwarnings = [
+    # supervision v0.28 depreciou ByteTrack; migrar para trackers.ByteTrackTracker antes da v0.30
+    "ignore:.*ByteTrack.*deprecated.*:FutureWarning",
+]
