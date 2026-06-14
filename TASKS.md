@@ -115,7 +115,7 @@
 **Objetivo:** Placas lidas e todos os eventos persistidos no banco.
 **Critério de conclusão:** Banco SQLite populado com eventos; placas visíveis no vídeo.
 
-- [ ] **3.1 — Plate OCR (src/ocr/plate_ocr.py)**
+- [x] **3.1 — Plate OCR (src/ocr/plate_ocr.py)**
   - Implementar `PlateOCR` conforme `ARCHITECTURE.md § 4.5`
   - Pré-processamento: upscale → CLAHE → binarização adaptativa (Otsu)
   - OCR com PaddleOCR (`use_angle_cls=True`, `lang='en'`)
@@ -124,21 +124,21 @@
   - Teste: `tests/unit/test_plate_ocr.py` — crop sintético com texto de placa,
     verificar extração e validação regex
 
-- [ ] **3.2 — Database Models (src/database/models.py)**
+- [x] **3.2 — Database Models (src/database/models.py)**
   - Implementar `VehicleEvent` SQLAlchemy conforme `ARCHITECTURE.md § 6`
   - Função `init_db(engine)` que cria tabelas e índices
   - Função `create_sqlite_engine(path)` com `connect_args={"check_same_thread": False}`
     e listener de `PRAGMA journal_mode=WAL` + `PRAGMA synchronous=NORMAL` — obrigatório
   - Suporte a PostgreSQL via `DB_BACKEND=postgresql` (engine padrão, sem `check_same_thread`)
 
-- [ ] **3.3 — DB Writer thread (src/database/db_writer.py)**
+- [x] **3.3 — DB Writer thread (src/database/db_writer.py)**
   - Implementar `DbWriter` como thread Consumer da `db_queue`
   - Batch insert de 10 eventos por vez com `session.bulk_save_objects()`
   - Flush forçado a cada 5 segundos (garante persistência mesmo com poucos veículos)
   - Log de erro (não exceção) se insert falhar — nunca travar o pipeline
   - Método `flush_and_close()` para shutdown limpo
 
-- [ ] **3.4 — Integração OCR + DB no main.py**
+- [x] **3.4 — Integração OCR + DB no main.py**
   - Inicializar `ThreadPoolExecutor(max_workers=2)` para OCR
   - Inicializar `DbWriter` e sua thread
   - No cruzamento detectado:
@@ -148,7 +148,7 @@
     - Quando OCR retornar resultado: UPDATE no registro existente via `track_id + session_id`
   - Shutdown: `ThreadPoolExecutor.shutdown(wait=True)` → `DbWriter.flush_and_close()`
 
-- [ ] **3.5 — Teste de persistência**
+- [x] **3.5 — Teste de persistência**
   - Rodar pipeline completo no vídeo real
   - Verificar banco: `SELECT vehicle_class, COUNT(*) FROM vehicle_events GROUP BY vehicle_class`
   - Verificar que placas detectadas têm formato válido

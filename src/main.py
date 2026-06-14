@@ -14,6 +14,8 @@ import signal
 import sys
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -22,7 +24,10 @@ import numpy as np
 from src.capture.video_capture import VideoCapture
 from src.config import Settings, load_settings
 from src.counting.crossing_logic import CrossingCounter
+from src.database.db_writer import DbWriter
+from src.database.models import create_sqlite_engine, init_db
 from src.detection.yolo_detector import YoloDetector
+from src.ocr.plate_ocr import OCRWorker, PlateOCR
 from src.rendering.overlay_renderer import OverlayRenderer
 from src.tracking.bytetrack_wrapper import ByteTrackWrapper
 
@@ -152,8 +157,14 @@ def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    # ── Identidade da sessão ──────────────────────────────────────────────
+    session_id: str = str(uuid.uuid4())
+    logger.info("Sessão iniciada: %s", session_id)
+
     # ── Filas ─────────────────────────────────────────────────────────────
     frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
+    ocr_queue: queue.Queue = queue.Queue(maxsize=50)
+    db_queue: queue.Queue = queue.Queue(maxsize=200)
 
     # ── Módulos do pipeline (todos no escopo de main) ─────────────────────
     cap = VideoCapture(
@@ -174,6 +185,24 @@ def main() -> None:
         line_points=settings.counting.line_points,
     )
     fps_meter = _FpsMeter(window=30)
+
+    # ── Banco de dados ────────────────────────────────────────────────────
+    db_path = Path(settings.database.sqlite_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_sqlite_engine(db_path)
+    init_db(engine)
+    db_writer = DbWriter(db_queue=db_queue, engine=engine)
+    db_writer.start()
+
+    # ── OCR (opcional) ────────────────────────────────────────────────────
+    ocr_worker: OCRWorker | None = None
+    if settings.ocr.enabled:
+        use_gpu = settings.model.device == "cuda"
+        plate_ocr = PlateOCR(languages=settings.ocr.languages, gpu=use_gpu)
+        ocr_worker = OCRWorker(
+            ocr_queue=ocr_queue, db_queue=db_queue, plate_ocr=plate_ocr
+        )
+        ocr_worker.start()
 
     # ── Estado de runtime ─────────────────────────────────────────────────
     writer: cv2.VideoWriter | None = None
@@ -220,6 +249,50 @@ def main() -> None:
                     tid, cls, counter.count,
                 )
 
+                event_meta = {
+                    "track_id": tid,
+                    "vehicle_class": cls,
+                    "frame_number": total_frames,
+                    "timestamp": datetime.now(timezone.utc),
+                    "session_id": session_id,
+                }
+
+                crop = counter.get_best_crop(tid)
+                frame_area = cap.frame_width * cap.frame_height
+                crop_qualifies = (
+                    crop is not None
+                    and crop.size > 0
+                    and (crop.shape[0] * crop.shape[1])
+                    >= settings.ocr.min_bbox_area_ratio * frame_area
+                )
+
+                if settings.ocr.enabled and ocr_worker is not None and crop_qualifies:
+                    try:
+                        ocr_queue.put_nowait((tid, crop, event_meta))
+                    except queue.Full:
+                        logger.warning(
+                            "ocr_queue cheia — crop de track_id=%d descartado; "
+                            "evento salvo sem placa",
+                            tid,
+                        )
+                        event_meta["plate_text"] = None
+                        event_meta["plate_confidence"] = None
+                        try:
+                            db_queue.put_nowait(event_meta)
+                        except queue.Full:
+                            logger.warning(
+                                "db_queue cheia — evento track_id=%d descartado", tid
+                            )
+                else:
+                    event_meta["plate_text"] = None
+                    event_meta["plate_confidence"] = None
+                    try:
+                        db_queue.put_nowait(event_meta)
+                    except queue.Full:
+                        logger.warning(
+                            "db_queue cheia — evento track_id=%d descartado", tid
+                        )
+
             # ── Renderização + Gravação ───────────────────────────────────
             fps_meter.tick()
             annotated = renderer.draw(frame, tracks, counter.count, fps_meter.fps)
@@ -232,10 +305,15 @@ def main() -> None:
     finally:
         session_end = time.perf_counter()
 
-        # Ordem inegociável: stop_event → parar captura → join → liberar writer
+        # Ordem inegociável: stop_event → captura → OCR → DB → VideoWriter
         stop_event.set()
         cap.stop()
         cap.join(timeout=5.0)
+
+        if ocr_worker is not None:
+            ocr_worker.stop_and_join(timeout=10.0)
+
+        db_writer.flush_and_close(timeout=5.0)
 
         if writer is not None:
             writer.release()
