@@ -71,6 +71,18 @@ class VideoCapture:
         self._cap.release()
         logger.info("Thread de captura encerrada.")
 
+    def join(self, timeout: float | None = None) -> None:
+        """Aguarda o encerramento da thread de captura com timeout configurável.
+
+        Complementa stop(): permite ao caller controlar o timeout de espera
+        independentemente do join interno de 2 s embutido em stop().
+
+        Args:
+            timeout: Segundos máximos de espera. None = espera indefinida.
+        """
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
     def is_alive(self) -> bool:
         """Retorna True se a thread de captura ainda está em execução."""
         return self._thread is not None and self._thread.is_alive()
@@ -95,13 +107,29 @@ class VideoCapture:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
-        """Loop de leitura executado na thread daemon."""
+        """Loop de leitura executado na thread daemon.
+
+        Detecta EOF quando ≥ 5 leituras consecutivas falham, sinalizando
+        stop_event para encerramento limpo do pipeline principal.
+        """
+        _EOF_THRESHOLD = 5
+        consecutive_failures = 0
+
         while not self._stop_event.is_set():
             ok, frame = self._cap.read()
             if not ok:
+                consecutive_failures += 1
                 logger.debug("Frame inválido ou fim de stream — descartado.")
+                if consecutive_failures >= _EOF_THRESHOLD:
+                    logger.info(
+                        "Fim do stream detectado (%d falhas consecutivas) — encerrando captura",
+                        consecutive_failures,
+                    )
+                    self._stop_event.set()
+                    break
                 continue
 
+            consecutive_failures = 0
             self._put_frame(frame)
 
     def _put_frame(self, frame: np.ndarray) -> None:

@@ -4,11 +4,11 @@ video:
   resize_width: 1280
 
 model:
-  weights: "models/yolov8s.pt"
+  weights: "yolov8n.pt"          # auto-download via ultralytics; trocar por models/yolov8s.pt em produção com GPU
   confidence_threshold: 0.45
   iou_threshold: 0.5
-  device: "cuda"
-  fp16: true
+  device: "cpu"                  # trocar para "cuda" quando GPU disponível
+  fp16: false                    # fp16 requer CUDA; manter false em CPU
 
 tracking:
   track_buffer: 30

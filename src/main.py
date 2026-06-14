@@ -1,0 +1,255 @@
+"""
+Pipeline principal de contagem e classificação de veículos em rodovias.
+
+Orquestra VideoCapture (thread Producer), loop de inferência (thread main),
+CrossingCounter e OverlayRenderer com shutdown gracioso via SIGINT/SIGTERM.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import logging
+import queue
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from src.capture.video_capture import VideoCapture
+from src.config import Settings, load_settings
+from src.counting.crossing_logic import CrossingCounter
+from src.detection.yolo_detector import YoloDetector
+from src.rendering.overlay_renderer import OverlayRenderer
+from src.tracking.bytetrack_wrapper import ByteTrackWrapper
+
+logger = logging.getLogger(__name__)
+
+
+# ── Motor de FPS ─────────────────────────────────────────────────────────────
+
+class _FpsMeter:
+    """Calcula FPS em janela deslizante usando perf_counter.
+
+    Args:
+        window: Número de amostras na janela deslizante (padrão 30).
+    """
+
+    def __init__(self, window: int = 30) -> None:
+        self._timestamps: collections.deque[float] = collections.deque(maxlen=window)
+
+    def tick(self) -> None:
+        """Registra o timestamp do frame atual."""
+        self._timestamps.append(time.perf_counter())
+
+    @property
+    def fps(self) -> float:
+        """FPS médio na janela atual. Retorna 0.0 se dados insuficientes."""
+        if len(self._timestamps) < 2:
+            return 0.0
+        return (len(self._timestamps) - 1) / (self._timestamps[-1] - self._timestamps[0])
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _build_writer(
+    output_path: Path,
+    fps: float,
+    frame: np.ndarray,
+) -> cv2.VideoWriter:
+    """Instancia VideoWriter com as dimensões exatas do primeiro frame recebido.
+
+    Args:
+        output_path: Caminho do arquivo de saída.
+        fps: Taxa de quadros da fonte de vídeo.
+        frame: Primeiro frame real — determina (width, height) do writer.
+
+    Returns:
+        cv2.VideoWriter pronto para receber frames.
+    """
+    h, w = frame.shape[:2]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    return cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
+
+
+def _print_summary(
+    duration: float,
+    total_frames: int,
+    avg_fps: float,
+    total_count: int,
+    class_counts: dict[str, int],
+    output_path: str,
+) -> None:
+    """Registra tabela de estatísticas finais via logger."""
+    lines: list[str] = [
+        "=" * 52,
+        "  PIPELINE ENCERRADO — ESTATÍSTICAS FINAIS",
+        "=" * 52,
+        f"  Duração da sessão  : {duration:.1f} s",
+        f"  Frames avaliados   : {total_frames}",
+        f"  FPS médio          : {avg_fps:.1f}",
+        f"  Total de veículos  : {total_count}",
+        f"  Vídeo anotado      : {output_path}",
+        "",
+    ]
+    if class_counts:
+        lines.append("  Contagem por classe:")
+        for cls, cnt in sorted(class_counts.items()):
+            lines.append(f"    {cls:<22} {cnt}")
+    else:
+        lines.append("  Nenhum veículo contado.")
+    lines.append("=" * 52)
+    logger.info("\n" + "\n".join(lines))
+
+
+# ── Pipeline principal ────────────────────────────────────────────────────────
+
+def main() -> None:
+    """Ponto de entrada do pipeline de contagem de veículos.
+
+    Inicializa e orquestra todos os módulos do pipeline em threads separadas.
+    Suporta shutdown gracioso via SIGINT (Ctrl+C) e SIGTERM (docker stop).
+    Toda a configuração vem exclusivamente do arquivo YAML especificado via --config.
+
+    Raises:
+        SystemExit: Se a configuração for inválida ou a fonte de vídeo não puder ser aberta.
+    """
+    # ── CLI ──────────────────────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        description="Pipeline de contagem e classificação de veículos em rodovias"
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config/settings.yaml"),
+        help="Caminho para config/settings.yaml (padrão: config/settings.yaml)",
+    )
+    args = parser.parse_args()
+
+    # ── Logging ──────────────────────────────────────────────────────────
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
+
+    # ── Configuração ─────────────────────────────────────────────────────
+    settings: Settings = load_settings(args.config)
+    logger.info("Configuração carregada: %s", args.config)
+
+    # ── Stop event — única fonte de verdade para encerramento ─────────────
+    stop_event = threading.Event()
+
+    def _signal_handler(signum: int, _frame: object) -> None:
+        """Captura SIGINT/SIGTERM e aciona o stop_event sem join nem I/O."""
+        logger.info("Sinal %d recebido — iniciando shutdown gracioso", signum)
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    # ── Filas ─────────────────────────────────────────────────────────────
+    frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
+
+    # ── Módulos do pipeline (todos no escopo de main) ─────────────────────
+    cap = VideoCapture(
+        source=settings.video.source,
+        frame_queue=frame_queue,
+        settings=settings.video,
+    )
+    detector = YoloDetector(settings=settings.model)
+    tracker = ByteTrackWrapper(settings=settings.tracking)
+    counter = CrossingCounter(
+        line_points=settings.counting.line_points,
+        direction=settings.counting.direction,
+        min_displacement_px=settings.counting.min_displacement_px,
+        class_vote_window=settings.counting.class_vote_window,
+    )
+    renderer = OverlayRenderer(
+        settings=settings.rendering,
+        line_points=settings.counting.line_points,
+    )
+    fps_meter = _FpsMeter(window=30)
+
+    # ── Estado de runtime ─────────────────────────────────────────────────
+    writer: cv2.VideoWriter | None = None
+    total_frames: int = 0
+    session_start: float = time.perf_counter()
+    warmed_up: bool = False
+
+    # ── Iniciar thread de captura ─────────────────────────────────────────
+    cap.start()
+
+    try:
+        while not stop_event.is_set():
+            # Consumir fila com timeout — não bloqueia se a fila estiver vazia
+            try:
+                frame = frame_queue.get(timeout=0.1)
+            except queue.Empty:
+                # EOF: thread de captura encerrou e não há mais frames pendentes
+                if not cap.is_alive() and frame_queue.empty():
+                    logger.info("Fim do stream detectado — encerrando pipeline")
+                    stop_event.set()
+                continue
+
+            # Warmup único com o shape real do vídeo antes do loop de inferência
+            if not warmed_up:
+                detector.warmup(frame.shape)
+                warmed_up = True
+
+            # Instanciar VideoWriter dinamicamente: herda resolução e FPS reais
+            if writer is None:
+                writer = _build_writer(Path(settings.video.output), cap.fps, frame)
+                logger.info("VideoWriter inicializado — saída: %s", settings.video.output)
+
+            total_frames += 1
+
+            # ── Inferência + Rastreamento + Contagem ──────────────────────
+            detections = detector.detect(frame)
+            tracks = tracker.update(detections, frame)
+            crossed_ids = counter.update(tracks, frame)
+
+            for tid in crossed_ids:
+                cls = counter.get_vehicle_class(tid)
+                logger.info(
+                    "Cruzamento: track_id=%d classe=%s total=%d",
+                    tid, cls, counter.count,
+                )
+
+            # ── Renderização + Gravação ───────────────────────────────────
+            fps_meter.tick()
+            annotated = renderer.draw(frame, tracks, counter.count, fps_meter.fps)
+            writer.write(annotated)
+
+    except Exception:
+        logger.error("Erro crítico no loop principal", exc_info=True)
+        stop_event.set()
+
+    finally:
+        session_end = time.perf_counter()
+
+        # Ordem inegociável: stop_event → parar captura → join → liberar writer
+        stop_event.set()
+        cap.stop()
+        cap.join(timeout=5.0)
+
+        if writer is not None:
+            writer.release()
+            logger.info("VideoWriter liberado")
+
+        _print_summary(
+            duration=session_end - session_start,
+            total_frames=total_frames,
+            avg_fps=fps_meter.fps,
+            total_count=counter.count,
+            class_counts=counter.get_class_counts(),
+            output_path=settings.video.output,
+        )
+
+
+if __name__ == "__main__":
+    main()

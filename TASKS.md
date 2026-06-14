@@ -93,7 +93,7 @@
     `motorcycle=amarelo`
   - Sempre trabalhar em `frame.copy()` — nunca modificar o frame original
 
-- [ ] **2.3 — Pipeline principal (src/main.py)**
+- [x] **2.3 — Pipeline principal (src/main.py)**
   - Montar e iniciar todas as threads: `VideoCapture`, inference loop, shutdown limpo
   - Inicializar: `Settings`, `YoloDetector.warmup()`, `ByteTrackWrapper`, `CrossingCounter`,
     `OverlayRenderer`, `cv2.VideoWriter`
@@ -101,7 +101,7 @@
   - Graceful shutdown: `Ctrl+C` → parar threads → fechar VideoWriter → logar estatísticas finais
   - Estatísticas finais no terminal: total de veículos por classe, FPS médio, duração do vídeo
 
-- [ ] **2.4 — Teste end-to-end Fase 2**
+- [x] **2.4 — Teste end-to-end Fase 2**
   - Rodar pipeline no vídeo real de entrada
   - Verificar visualmente que contador sobe corretamente
   - Verificar que vídeo de saída é gerado em `data/outputs/`

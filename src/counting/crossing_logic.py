@@ -195,6 +195,20 @@ class CrossingCounter:
             return "unknown"
         return votes.most_common(1)[0][0]
 
+    def get_class_counts(self) -> dict[str, int]:
+        """Retorna contagem por classe de veículo para todos os track_ids que cruzaram.
+
+        Usa a votação majoritária de cada track_id cruzado para determinar sua classe.
+
+        Returns:
+            Dicionário {class_name: count} com os totais acumulados na sessão.
+        """
+        counts: dict[str, int] = {}
+        for tid in self._crossed_ids:
+            cls = self.get_vehicle_class(tid)
+            counts[cls] = counts.get(cls, 0) + 1
+        return counts
+
     def get_best_crop(self, track_id: int) -> np.ndarray | None:
         """Retorna o crop de maior área visto para o track_id, ou None.
 
