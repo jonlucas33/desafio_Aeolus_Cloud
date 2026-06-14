@@ -70,7 +70,7 @@
 **Objetivo:** Pipeline completo com contagem correta e vídeo anotado gerado.
 **Critério de conclusão:** Vídeo de saída com linha virtual, bboxes, contador e FPS visíveis.
 
-- [ ] **2.1 — Crossing Logic (src/counting/crossing_logic.py)**
+- [x] **2.1 — Crossing Logic (src/counting/crossing_logic.py)**
   - Implementar `CrossingCounter` completo conforme `ARCHITECTURE.md § 5`
   - Produto vetorial 2D para detecção de crossing — **não usar threshold em Y**
   - Filtro de jitter (`min_displacement_px`)
@@ -79,13 +79,13 @@
   - Best-crop buffer: `_best_crop: dict[int, np.ndarray]` e `_max_bbox_area: dict[int, float]`
     atualizados a cada frame. No cruzamento, o `_best_crop` é o payload enviado para o OCR.
   - Testes obrigatórios em `tests/unit/test_crossing_logic.py`:
-    - [ ] Veículo cruzando de cima para baixo → contado
-    - [ ] Mesmo track_id cruzando duas vezes → contado apenas uma vez
-    - [ ] Veículo parado sobre a linha (jitter < `min_displacement_px`) → não contado
-    - [ ] Linha diagonal (não horizontal) → crossing detectado corretamente
-    - [ ] Cruzamento no sentido errado com `direction=top_to_bottom` → não contado
+    - [x] Veículo cruzando de cima para baixo → contado
+    - [x] Mesmo track_id cruzando duas vezes → contado apenas uma vez
+    - [x] Veículo parado sobre a linha (jitter < `min_displacement_px`) → não contado
+    - [x] Linha diagonal (não horizontal) → crossing detectado corretamente
+    - [x] Cruzamento no sentido errado com `direction=top_to_bottom` → não contado
 
-- [ ] **2.2 — Overlay Renderer (src/rendering/overlay_renderer.py)**
+- [x] **2.2 — Overlay Renderer (src/rendering/overlay_renderer.py)**
   - Implementar `OverlayRenderer` conforme `ARCHITECTURE.md § 4.7`
   - Desenhar: linha virtual (cor configurável), bbox com cor por classe, track_id acima da bbox,
     nome da classe, contador total (destaque no canto superior esquerdo), FPS (canto superior direito)

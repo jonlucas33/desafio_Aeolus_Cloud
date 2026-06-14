@@ -29,3 +29,7 @@ database:
   backend: "sqlite"
   sqlite_path: "data/outputs/events.db"
   postgres_url: ""
+
+rendering:
+  line_color: [0, 255, 255]   # BGR: amarelo
+  line_thickness: 2

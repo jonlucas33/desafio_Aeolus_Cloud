@@ -63,6 +63,13 @@ class DatabaseSettings(BaseModel):
     postgres_url: str
 
 
+class RenderingSettings(BaseModel):
+    """Configurações visuais do overlay desenhado sobre os frames."""
+
+    line_color: list[int] = [0, 255, 255]   # BGR: amarelo
+    line_thickness: int = 2
+
+
 class Settings(BaseModel):
     """Configuração raiz do pipeline — agrega todas as seções."""
 
@@ -72,6 +79,7 @@ class Settings(BaseModel):
     counting: CountingSettings
     ocr: OCRSettings
     database: DatabaseSettings
+    rendering: RenderingSettings = RenderingSettings()
 
 
 def load_settings(path: Path) -> Settings:
