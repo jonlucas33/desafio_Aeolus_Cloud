@@ -19,6 +19,7 @@ class VideoSettings(BaseModel):
     source: str
     output: str
     resize_width: int = Field(gt=0)
+    realtime: bool = False
 
 
 class ModelSettings(BaseModel):

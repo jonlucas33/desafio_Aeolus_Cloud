@@ -106,6 +106,7 @@
   - Verificar visualmente que contador sobe corretamente
   - Verificar que vídeo de saída é gerado em `data/outputs/`
   - Medir e logar FPS médio (meta: ≥ 25 FPS em GPU, ≥ 10 FPS em CPU com YOLOv8n)
+  - Validado: 2700/2700 frames avaliados, 2 veículos contados (1 car + 1 truck), EOF natural
 
 ---
 

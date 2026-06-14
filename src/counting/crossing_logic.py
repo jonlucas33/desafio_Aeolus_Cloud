@@ -33,10 +33,17 @@ def _crossed_line(
     p_prev: tuple[float, float],
     p_curr: tuple[float, float],
 ) -> bool:
-    """True se o ponto mudou de lado em relação à linha virtual."""
+    """True se o ponto mudou de lado em relação à linha virtual.
+
+    Fórmula estrita: d1 * d2 < 0 OR exatamente um dos pontos está sobre a linha.
+    Isso captura o caso d1 < 0, d2 == 0 (centróide cai exatamente na linha),
+    que a fórmula ingênua (d1 > 0) != (d2 > 0) perde: False != False = False.
+    Nota: -0.0 < 0 é False em IEEE 754, portanto d1 * d2 < 0 falha quando
+    d2 == 0.0 — a cláusula OR cobre esse caso.
+    """
     d1 = _side(*line_a, *line_b, *p_prev)
     d2 = _side(*line_a, *line_b, *p_curr)
-    return (d1 > 0) != (d2 > 0)
+    return d1 * d2 < 0 or (d1 == 0) != (d2 == 0)
 
 
 def _is_valid_movement(
@@ -161,9 +168,14 @@ class CrossingCounter:
             p_prev = self._previous_centroids[tid]
             p_curr = centroid
 
-            # 5. Filtro de jitter: movimento insuficiente — manter centróide anterior
+            # 5. Filtro de jitter — INVARIANTE: centróide NÃO é atualizado.
+            #    self._previous_centroids[tid] permanece congelado em p_prev até que
+            #    o veículo acumule deslocamento ≥ min_displacement_px. Isso é essencial
+            #    para detectar travessias lentas: cada frame de jitter NÃO avança a
+            #    referência, então uma travessia futura ainda será medida a partir do
+            #    último ponto válido — não do último ponto de jitter.
             if not _is_valid_movement(p_prev, p_curr, self._min_displacement_px):
-                continue
+                continue  # centróide congelado; update em linha 190 NÃO é alcançado
 
             # 6. Filtro de direção
             if not _is_correct_direction(p_prev, p_curr, self._direction):

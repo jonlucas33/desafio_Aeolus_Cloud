@@ -207,3 +207,65 @@ def test_crossed_ids_returned_with_best_crop_available() -> None:
     assert 1 in crossed
     crop = counter.get_best_crop(1)
     assert crop is not None, "best_crop deve estar disponível no momento do cruzamento"
+
+
+# ── Novos testes: AÇÃO 3 — fórmula estrita do produto vetorial ───────────────
+
+def test_crossing_detected_when_centroid_lands_exactly_on_line() -> None:
+    """Produto vetorial blindado: centróide cai EXATAMENTE na linha (d2 == 0).
+
+    Caso: d1 < 0 (acima da linha), d2 == 0 (sobre a linha).
+    Fórmula antiga: (False) != (False) == False → cruzamento PERDIDO.
+    Fórmula nova:   d1 * d2 < 0  OR  (d1==0) != (d2==0)
+                    = -0.0 < 0 [False]  OR  False != True [True]  →  DETECTADO.
+    """
+    # linha em y=540; centróide começa 20 px acima e cai exatamente em y=540
+    counter = make_counter(
+        line_points=[[0, 540], [1280, 540]],
+        direction="any",
+        min_displacement_px=5,
+    )
+    counter.update([make_track(1, centroid=(640, 520))])           # d1 < 0: acima
+    crossed = counter.update([make_track(1, centroid=(640, 540))]) # d2 == 0: sobre a linha
+
+    assert 1 in crossed, (
+        "d1 < 0, d2 == 0 deve ser detectado como cruzamento — "
+        "a fórmula (d1>0)!=(d2>0) perde este caso"
+    )
+    assert counter.count == 1
+
+
+def test_jitter_freeze_preserves_reference_and_enables_crossing_detection() -> None:
+    """AÇÃO 2 + 3: centróide congelado pelo jitter + fórmula estrita = cruzamento detectado.
+
+    Sequência:
+      Frame 0: registra centróide em (640, 520) — 20 px acima da linha.
+      Frames 1-2: movimentos de 3 px cada (< min_displacement_px=10) → JITTER.
+                  self._previous_centroids[1] permanece congelado em (640, 520).
+      Frame 3: salta para (640, 540) — exatamente sobre a linha.
+               Deslocamento a partir do centróide CONGELADO = 20 px > 10 → válido.
+               d1 = _side(acima) < 0, d2 = _side(sobre_linha) == 0 → DETECTADO.
+
+    Se o centróide NÃO estivesse congelado (bug de "amnésia"), p_prev estaria
+    em (640, 526) e o deslocamento seria 14 px — mas d2 == 0 ainda exigiria
+    a fórmula correta. Este teste valida AMBAS as correções em conjunto.
+    """
+    counter = make_counter(
+        line_points=[[0, 540], [1280, 540]],
+        direction="any",
+        min_displacement_px=10,  # limiar elevado para forçar o freeze
+    )
+
+    counter.update([make_track(1, centroid=(640, 520))])  # registra p_prev = (640, 520)
+    counter.update([make_track(1, centroid=(640, 523))])  # 3 px < 10 → jitter; p_prev CONGELADO
+    counter.update([make_track(1, centroid=(640, 526))])  # 6 px < 10 → jitter; p_prev CONGELADO
+
+    # 20 px a partir do centróide congelado em 520 → deslocamento válido
+    # d2 == 0 (cai exatamente em y=540) → requer fórmula estrita
+    crossed = counter.update([make_track(1, centroid=(640, 540))])
+
+    assert 1 in crossed, (
+        "Cruzamento deve ser detectado: centróide congelado em 520 e deslocamento "
+        "acumulado de 20 px > 10 px, com centróide atual exatamente sobre a linha"
+    )
+    assert counter.count == 1

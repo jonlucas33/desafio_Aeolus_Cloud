@@ -1,10 +1,11 @@
 video:
-  source: "data/inputs/video.mp4"
+  source: "data/inputs/video_cortado.mp4"
   output: "data/outputs/result.mp4"
   resize_width: 1280
+  realtime: false             # false = backpressure (arquivo); true = descarte (câmera)
 
 model:
-  weights: "yolov8n.pt"          # auto-download via ultralytics; trocar por models/yolov8s.pt em produção com GPU
+  weights: "models/yolov8n.pt"          # auto-download via ultralytics;
   confidence_threshold: 0.45
   iou_threshold: 0.5
   device: "cpu"                  # trocar para "cuda" quando GPU disponível
@@ -15,8 +16,8 @@ tracking:
   min_box_area: 100
 
 counting:
-  line_points: [[0, 540], [1280, 540]]
-  direction: "top_to_bottom"
+  line_points: [[0, 540], [1920, 540]]   # largura total do frame 1920px
+  direction: "any"                        # ambas as mãos da pista
   min_displacement_px: 5
   class_vote_window: 15
 

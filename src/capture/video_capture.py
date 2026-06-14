@@ -51,6 +51,7 @@ class VideoCapture:
         self._fps: float = float(self._cap.get(cv2.CAP_PROP_FPS))
         self._frame_width: int = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self._frame_height: int = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self._realtime: bool = settings.realtime
 
     # ------------------------------------------------------------------
     # Interface pública
@@ -109,15 +110,19 @@ class VideoCapture:
     def _run(self) -> None:
         """Loop de leitura executado na thread daemon.
 
-        Detecta EOF quando ≥ 5 leituras consecutivas falham, sinalizando
-        stop_event para encerramento limpo do pipeline principal.
+        O contador ``consecutive_failures`` é estritamente reservado a falhas
+        de leitura do codec (``cv2.VideoCapture.read()`` retorna ``False``).
+        Timeouts de fila em ``_put_frame`` jamais interagem com este contador.
+        EOF é sinalizado após ``_EOF_THRESHOLD`` falhas consecutivas de codec.
         """
         _EOF_THRESHOLD = 5
-        consecutive_failures = 0
+        consecutive_failures = 0  # exclusivo de falhas do codec OpenCV
 
         while not self._stop_event.is_set():
             ok, frame = self._cap.read()
+
             if not ok:
+                # ── Falha real de leitura do codec — único ponto de incremento ──
                 consecutive_failures += 1
                 logger.debug("Frame inválido ou fim de stream — descartado.")
                 if consecutive_failures >= _EOF_THRESHOLD:
@@ -129,16 +134,35 @@ class VideoCapture:
                     break
                 continue
 
+            # ── Leitura bem-sucedida: repor contador ──
             consecutive_failures = 0
+            # _put_frame NUNCA toca em consecutive_failures
             self._put_frame(frame)
 
     def _put_frame(self, frame: np.ndarray) -> None:
-        """Insere frame na fila, descartando o mais antigo se ela estiver cheia."""
-        try:
-            self._queue.put_nowait(frame)
-        except queue.Full:
+        """Insere frame na fila segundo a estratégia definida por ``settings.realtime``.
+
+        **realtime=True** (câmera ao vivo — latência zero):
+            Insere sem bloquear. Se a fila estiver cheia, descarta o frame
+            mais antigo para garantir que o consumidor veja sempre o mais recente.
+
+        **realtime=False** (arquivo de vídeo — sem perdas):
+            Aplica backpressure: aguarda espaço na fila em iterações de 0.1 s,
+            respeitando ``stop_event``. Nenhum frame é descartado.
+        """
+        if self._realtime:
             try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                pass
-            self._queue.put_nowait(frame)
+                self._queue.put_nowait(frame)
+            except queue.Full:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self._queue.put_nowait(frame)
+        else:
+            while not self._stop_event.is_set():
+                try:
+                    self._queue.put(frame, timeout=0.1)
+                    return
+                except queue.Full:
+                    continue  # tenta novamente — sem descartar, sem afetar codec counter

@@ -35,8 +35,8 @@ def _make_mock_cap(mocker, *, fps: float = 30.0, width: float = 640.0,
     return mock_cap
 
 
-def _make_settings() -> VideoSettings:
-    return VideoSettings(source="dummy.mp4", output="out.mp4", resize_width=640)
+def _make_settings(realtime: bool = False) -> VideoSettings:
+    return VideoSettings(source="dummy.mp4", output="out.mp4", resize_width=640, realtime=realtime)
 
 
 # ---------------------------------------------------------------------------
@@ -74,15 +74,13 @@ def test_stop_cleans_up_without_deadlock(mocker) -> None:
 
 
 def test_frame_drop_discards_oldest_when_queue_is_full(mocker) -> None:
-    """Quando a fila está cheia, o frame mais antigo é descartado e o novo inserido."""
-    old_frame = np.zeros((480, 640, 3), dtype=np.uint8)      # sentinel: tudo preto
-    new_frame = np.full((480, 640, 3), 128, dtype=np.uint8)  # frame novo: cinza
+    """realtime=True: quando a fila está cheia, descarta o mais antigo e insere o novo."""
+    old_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    new_frame = np.full((480, 640, 3), 128, dtype=np.uint8)
 
-    # Fila maxsize=1 pré-preenchida com o frame antigo
     q: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
     q.put(old_frame)
 
-    # Mock retorna sempre o new_frame
     mock_cap = MagicMock()
     mock_cap.isOpened.return_value = True
     mock_cap.read.return_value = (True, new_frame.copy())
@@ -95,7 +93,7 @@ def test_frame_drop_discards_oldest_when_queue_is_full(mocker) -> None:
 
     from src.capture.video_capture import VideoCapture
 
-    cap = VideoCapture("dummy.mp4", q, _make_settings())
+    cap = VideoCapture("dummy.mp4", q, _make_settings(realtime=True))
     cap.start()
     time.sleep(0.1)
     cap.stop()
@@ -149,3 +147,81 @@ def test_corrupted_frame_is_silently_discarded(mocker) -> None:
     cap.stop()
 
     assert q.empty(), "Frames corrompidos não devem ser colocados na fila"
+
+
+def test_realtime_false_waits_for_space_without_dropping(mocker) -> None:
+    """realtime=False: com fila cheia, a thread bloqueia sem descartar o frame antigo."""
+    sentinel = np.zeros((480, 640, 3), dtype=np.uint8)
+    new_frame = np.full((480, 640, 3), 99, dtype=np.uint8)
+
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    mock_cap.read.return_value = (True, new_frame.copy())
+    mock_cap.get.side_effect = lambda prop: {
+        cv2.CAP_PROP_FPS: 30.0,
+        cv2.CAP_PROP_FRAME_WIDTH: 640.0,
+        cv2.CAP_PROP_FRAME_HEIGHT: 480.0,
+    }.get(prop, 0.0)
+    mocker.patch("cv2.VideoCapture", return_value=mock_cap)
+
+    q: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+    q.put(sentinel)  # fila cheia com frame sentinela
+
+    from src.capture.video_capture import VideoCapture
+
+    cap = VideoCapture("dummy.mp4", q, _make_settings(realtime=False))
+    cap.start()
+
+    # Thread deve estar bloqueada aguardando espaço — sentinel intacto
+    time.sleep(0.3)
+    assert q.qsize() == 1, "Fila deve permanecer cheia: backpressure não descarta"
+
+    # Liberar espaço: consumir o sentinel
+    item = q.get_nowait()
+    assert np.array_equal(item, sentinel), "sentinel deve ser o primeiro a sair, não foi descartado"
+
+    # Thread agora consegue inserir new_frame
+    time.sleep(0.2)
+    cap.stop()
+
+    assert not q.empty(), "new_frame deve ter sido inserido após liberar espaço"
+    result = q.get_nowait()
+    assert np.array_equal(result, new_frame), "frame inserido deve ser new_frame"
+
+
+def test_queue_put_timeout_does_not_increment_eof_counter(mocker) -> None:
+    """Timeout de put na fila (realtime=False) nunca deve acionar detecção de EOF.
+
+    Se o contador de falhas fosse incrementado por timeouts de fila,
+    5 timeouts × 0.1 s = 0.5 s bastariam para encerrar a thread.
+    Após 0.9 s com fila cheia e leituras sempre bem-sucedidas, a thread
+    deve continuar viva — provando que os contadores estão separados.
+    """
+    good_frame = np.full((480, 640, 3), 7, dtype=np.uint8)
+
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    mock_cap.read.return_value = (True, good_frame.copy())  # codec nunca falha
+    mock_cap.get.side_effect = lambda prop: {
+        cv2.CAP_PROP_FPS: 30.0,
+        cv2.CAP_PROP_FRAME_WIDTH: 640.0,
+        cv2.CAP_PROP_FRAME_HEIGHT: 480.0,
+    }.get(prop, 0.0)
+    mocker.patch("cv2.VideoCapture", return_value=mock_cap)
+
+    q: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+    q.put(good_frame)  # mantém fila cheia durante todo o teste
+
+    from src.capture.video_capture import VideoCapture
+
+    cap = VideoCapture("dummy.mp4", q, _make_settings(realtime=False))
+    cap.start()
+
+    # 0.9 s >> 5 × 0.1 s (limiar de EOF se o bug existisse)
+    time.sleep(0.9)
+
+    assert cap.is_alive(), (
+        "Thread não deve encerrar por EOF quando a fila está cheia: "
+        "timeouts de put != falhas de leitura do codec"
+    )
+    cap.stop()
