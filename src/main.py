@@ -5,10 +5,10 @@ Orquestra VideoCapture (thread Producer), loop de inferência (thread main),
 CrossingCounter e OverlayRenderer com shutdown gracioso via SIGINT/SIGTERM.
 """
 
+from __future__ import annotations
+
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="supervision")
-
-from __future__ import annotations
 
 import argparse
 import collections
@@ -320,7 +320,14 @@ def main() -> None:
 
             # ── Renderização + Gravação ───────────────────────────────────
             fps_meter.tick()
-            annotated = renderer.draw(frame, tracks, counter.count, fps_meter.fps)
+            # Mapeia track_id → classe refinada para o renderer colorir bboxes
+            # com a paleta de classes de negócio (não as COCO brutas do detector).
+            class_render_map = {
+                t.track_id: counter.get_vehicle_class(t.track_id) for t in tracks
+            }
+            annotated = renderer.draw(
+                frame, tracks, counter.count, fps_meter.fps, class_render_map
+            )
             writer.write(annotated)
 
     except Exception:

@@ -135,7 +135,7 @@ def test_draw_bbox_modifies_output_frame() -> None:
 
 
 def test_draw_accepts_multiple_tracks() -> None:
-    """draw() deve aceitar múltiplos tracks sem erro."""
+    """draw() deve aceitar múltiplos tracks com class_overrides de classes refinadas."""
     from src.rendering.overlay_renderer import OverlayRenderer
 
     renderer = OverlayRenderer(settings=make_settings(), line_points=LINE_POINTS)
@@ -145,8 +145,54 @@ def test_draw_accepts_multiple_tracks() -> None:
         make_track(2, centroid=(400.0, 300.0), class_name="truck"),
         make_track(3, centroid=(200.0, 150.0), class_name="motorcycle"),
     ]
+    overrides = {1: "sedan_hatch", 2: "truck_bus", 3: "motorcycle"}
 
-    result = renderer.draw(frame, tracks=tracks, count=3, fps=30.0)
+    result = renderer.draw(frame, tracks=tracks, count=3, fps=30.0,
+                           class_overrides=overrides)
+
+    assert result.shape == frame.shape
+
+
+def test_draw_uses_class_override_over_track_class_name() -> None:
+    """class_overrides deve mudar a cor do bbox em relação ao fallback padrão.
+
+    Sem override: "car" não está na nova paleta → _DEFAULT_COLOR (cinza).
+    Com override "sedan_hatch": cor verde da paleta → resultado diferente.
+    """
+    from src.rendering.overlay_renderer import OverlayRenderer
+
+    renderer = OverlayRenderer(settings=make_settings(), line_points=LINE_POINTS)
+    track = make_track(track_id=7, centroid=(250.0, 200.0), class_name="car")
+
+    result_no_override = renderer.draw(
+        blank_frame(h=300, w=500), [track], 0, 0.0,
+    )
+    result_with_override = renderer.draw(
+        blank_frame(h=300, w=500), [track], 0, 0.0,
+        class_overrides={7: "sedan_hatch"},
+    )
+
+    assert not np.array_equal(result_no_override, result_with_override), (
+        "class_overrides deve alterar a cor do bbox — "
+        "'car' recebe default cinza, 'sedan_hatch' recebe verde"
+    )
+
+
+def test_draw_accepts_refined_class_overrides_for_all_classes() -> None:
+    """draw() deve aceitar overrides de classes refinadas sem erro."""
+    from src.rendering.overlay_renderer import OverlayRenderer
+
+    renderer = OverlayRenderer(settings=make_settings(), line_points=LINE_POINTS)
+    frame = blank_frame()
+    tracks = [
+        make_track(1, centroid=(100.0, 100.0), class_name="car"),
+        make_track(2, centroid=(300.0, 200.0), class_name="truck"),
+        make_track(3, centroid=(500.0, 300.0), class_name="motorcycle"),
+    ]
+    overrides = {1: "sedan_hatch", 2: "truck_bus", 3: "motorcycle"}
+
+    result = renderer.draw(frame, tracks=tracks, count=3, fps=30.0,
+                           class_overrides=overrides)
 
     assert result.shape == frame.shape
 
