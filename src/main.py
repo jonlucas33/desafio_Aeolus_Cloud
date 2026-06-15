@@ -4,6 +4,10 @@ Pipeline principal de contagem e classificação de veículos em rodovias.
 Orquestra VideoCapture (thread Producer), loop de inferência (thread main),
 CrossingCounter e OverlayRenderer com shutdown gracioso via SIGINT/SIGTERM.
 """
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="supervision")
+
 from __future__ import annotations
 
 import argparse
