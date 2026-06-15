@@ -60,6 +60,9 @@ class OCRSettings(BaseModel):
     min_bbox_area_ratio: float = Field(gt=0.0, lt=1.0)
     confidence_threshold: float = Field(default=0.20, gt=0.0, lt=1.0)
     languages: list[str]
+    plate_detector_enabled: bool = Field(default=True)
+    plate_detector_weights: str = Field(default="models/license_plate_detector.pt")
+    plate_detector_conf: float = Field(default=0.5, gt=0.0, lt=1.0)
 
 
 class DatabaseSettings(BaseModel):

@@ -31,6 +31,9 @@ ocr:
   min_bbox_area_ratio: 0.005
   confidence_threshold: 0.20
   languages: ["pt", "en"]
+  plate_detector_enabled: true
+  plate_detector_weights: "models/license_plate_detector.pt"
+  plate_detector_conf: 0.50
 
 database:
   backend: "sqlite"

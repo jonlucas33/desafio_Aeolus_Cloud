@@ -209,8 +209,30 @@ def main() -> None:
             gpu=use_gpu,
             confidence_threshold=settings.ocr.confidence_threshold,
         )
+
+        # Estágio 1: detector de placa (dois estágios)
+        plate_detector = None
+        if settings.ocr.plate_detector_enabled:
+            pd_weights = Path(settings.ocr.plate_detector_weights)
+            if pd_weights.exists():
+                from src.ocr.plate_detector import PlateDetector
+                plate_detector = PlateDetector(
+                    weights_path=str(pd_weights),
+                    conf_threshold=settings.ocr.plate_detector_conf,
+                )
+            else:
+                logger.warning(
+                    "PlateDetector habilitado mas modelo não encontrado: %s — "
+                    "OCR de dois estágios desabilitado; execute "
+                    "python scripts/download_plate_model.py para baixar o modelo",
+                    pd_weights,
+                )
+
         ocr_worker = OCRWorker(
-            ocr_queue=ocr_queue, db_queue=db_queue, plate_ocr=plate_ocr
+            ocr_queue=ocr_queue,
+            db_queue=db_queue,
+            plate_ocr=plate_ocr,
+            plate_detector=plate_detector,
         )
         ocr_worker.start()
 
