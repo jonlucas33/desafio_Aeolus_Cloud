@@ -1,8 +1,9 @@
 """
 OCR de placas veiculares com EasyOCR e thread consumidora de ocr_queue.
 
-Responsabilidade única: pré-processar crops de veículos, executar OCR,
-validar padrões de placa brasileira e encaminhar resultado para db_queue.
+Responsabilidade única: pré-processar crops de veículos, executar OCR de dois
+estágios (PlateDetector → EasyOCR), validar padrões de placa brasileira e
+encaminhar resultado para db_queue.
 """
 from __future__ import annotations
 
@@ -10,10 +11,14 @@ import logging
 import queue
 import re
 import threading
+from typing import TYPE_CHECKING
 
 import cv2
 import easyocr
 import numpy as np
+
+if TYPE_CHECKING:
+    from src.ocr.plate_detector import PlateDetector
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +131,10 @@ class PlateOCR:
 class OCRWorker:
     """Thread consumidora da ocr_queue que despacha resultados para db_queue.
 
+    Implementa OCR de dois estágios:
+      1. PlateDetector localiza a placa no crop do veículo (quando disponível).
+      2. EasyOCR lê o texto da placa (usando o crop do Estágio 1 ou fallback).
+
     Cada item da ocr_queue tem formato: (track_id, crop, event_meta).
     event_meta é um dict com os campos necessários para VehicleEventModel,
     exceto plate_text e plate_confidence (adicionados pelo worker).
@@ -133,7 +142,9 @@ class OCRWorker:
     Args:
         ocr_queue: Fila de entrada (track_id, crop, event_meta).
         db_queue: Fila de saída para DbWriter.
-        plate_ocr: Instância de PlateOCR para inferência.
+        plate_ocr: Instância de PlateOCR para inferência EasyOCR.
+        plate_detector: Detector de placa opcional para o estágio 1. Quando
+            None, o OCR opera diretamente sobre o crop do veículo (modo legado).
     """
 
     def __init__(
@@ -141,10 +152,12 @@ class OCRWorker:
         ocr_queue: queue.Queue,
         db_queue: queue.Queue,
         plate_ocr: PlateOCR,
+        plate_detector: PlateDetector | None = None,
     ) -> None:
         self._ocr_queue = ocr_queue
         self._db_queue = db_queue
         self._plate_ocr = plate_ocr
+        self._plate_detector = plate_detector
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -168,14 +181,39 @@ class OCRWorker:
         logger.info("OCRWorker encerrado")
 
     def _run(self) -> None:
-        """Loop de OCR: consome crops, processa e encaminha para db_queue."""
+        """Loop de OCR de dois estágios: localiza placa, lê texto, encaminha para db_queue."""
         while not self._stop_event.is_set() or not self._ocr_queue.empty():
             try:
                 track_id, crop, event_meta = self._ocr_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
-            plate_text, plate_confidence = self._plate_ocr.read(crop)
+            # Estágio 1 — detecção de placa (quando PlateDetector disponível)
+            ocr_crop = crop
+            if self._plate_detector is not None:
+                try:
+                    plate_crop = self._plate_detector.detect(crop)
+                    if plate_crop is not None and plate_crop.size > 0:
+                        ocr_crop = plate_crop
+                        logger.debug(
+                            "PlateDetector: placa localizada para track_id=%d "
+                            "(%dx%d px)",
+                            track_id, plate_crop.shape[1], plate_crop.shape[0],
+                        )
+                    else:
+                        logger.debug(
+                            "PlateDetector: nenhuma placa detectada em track_id=%d "
+                            "— usando crop do veículo como fallback",
+                            track_id,
+                        )
+                except Exception:
+                    logger.warning(
+                        "PlateDetector: erro ao processar track_id=%d — fallback para crop do veículo",
+                        track_id, exc_info=True,
+                    )
+
+            # Estágio 2 — leitura de texto com EasyOCR
+            plate_text, plate_confidence = self._plate_ocr.read(ocr_crop)
 
             event_meta["plate_text"] = plate_text
             event_meta["plate_confidence"] = plate_confidence
