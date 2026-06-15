@@ -5,7 +5,7 @@ video:
   realtime: false             # false = backpressure (arquivo); true = descarte (câmera)
 
 model:
-  weights: "models/yolov8n.pt"          # auto-download via ultralytics;
+  weights: "models/yolov8s.pt"          # auto-download via ultralytics;
   confidence_threshold: 0.45            # mantido para retrocompatibilidade
   base_conf_threshold: 0.35             # limiar passado ao YOLO (captura todas as motos)
   default_class_threshold: 0.45         # limiar rigoroso para carros/caminhões/ônibus
