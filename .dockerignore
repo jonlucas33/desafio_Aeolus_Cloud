@@ -1,0 +1,41 @@
+# Arquivos de dados grandes — montados via volume em runtime
+data/
+*.mp4
+*.avi
+*.mkv
+*.db
+
+# Pesos de modelo — montados via volume em runtime
+models/
+
+# Ambiente Python local
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Ferramentas de desenvolvimento e artefatos de CI
+.git/
+.github/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# IDE e OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Documentos e rascunhos
+*.docx
+TASKS.md
+
+# Variáveis de ambiente
+.env
+*.env

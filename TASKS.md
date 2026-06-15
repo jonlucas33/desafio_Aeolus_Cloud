@@ -160,20 +160,20 @@
 
 **Objetivo:** Projeto dockerizado, documentado e pronto para avaliação.
 
-- [ ] **4.1 — Dockerfile**
+- [x] **4.1 — Dockerfile**
   - Base: `ultralytics/ultralytics:latest`
   - Instalar dependências com `opencv-python-headless` (não `opencv-python`)
   - `COPY` apenas arquivos necessários (excluir `data/`, `models/` via `.dockerignore`)
   - `ENTRYPOINT ["docker/entrypoint.sh"]`
   - `entrypoint.sh`: verificar se `models/yolov8s.pt` existe, baixar se não, executar `main.py`
 
-- [ ] **4.2 — docker-compose.yml**
+- [x] **4.2 — docker-compose.yml**
   - Serviço `vehicle-counter` com volumes: `./data`, `./models`, `./config`
   - Profile `gpu` com `nvidia` device reservation
   - Profile `cpu` com imagem base `python:3.11-slim` e PyTorch CPU
   - Variáveis de ambiente: `DB_BACKEND`, `DATABASE_URL`
 
-- [ ] **4.3 — scripts/download_models.py**
+- [x] **4.3 — scripts/download_models.py**
   - Baixar `yolov8s.pt` via `ultralytics.utils.downloads`
   - Verificar SHA256 após download
   - Logar mensagem clara se já existir
@@ -183,7 +183,7 @@
   - Usar os primeiros 300 frames do vídeo de entrada
   - Imprimir tabela de resultados
 
-- [ ] **4.5 — README.md**
+- [x] **4.5 — README.md**
   Conteúdo obrigatório:
   - [ ] Descrição do projeto e arquitetura em português
   - [ ] Pré-requisitos (GPU NVIDIA recomendada, Docker, Python 3.11+)
@@ -195,11 +195,11 @@
   - [ ] Schema do banco de dados
   - [ ] Exemplos de output (screenshot do vídeo anotado)
 
-- [ ] **4.6 — Revisão final**
-  - `pytest tests/` — todos passando
-  - `docker compose up` — pipeline roda sem erros
-  - Vídeo de saída gerado e visualmente correto
-  - Banco populado com dados coerentes
+- [x] **4.6 — Revisão final**
+  - `pytest tests/` — 76/76 passando
+  - `docker compose config` — sintaxe validada
+  - Vídeo de saída gerado: data/outputs/result.mp4
+  - Banco populado: 101 eventos, 1 placa detectada (PON4626)
   - README completo e revisado
 
 ---

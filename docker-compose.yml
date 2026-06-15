@@ -1,0 +1,51 @@
+services:
+
+  # ── Perfil padrão: CPU ────────────────────────────────────────────────────
+  # Execução: docker compose up
+  vehicle-counter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vehicle-counter:latest
+    container_name: vehicle-counter
+    volumes:
+      # Vídeo de entrada e artefatos de saída (.mp4, .db) persistidos no host
+      - ./data:/app/data
+      # Pesos do modelo persistidos entre execuções (evita re-download)
+      - ./models:/app/models
+      # Configuração substituível sem rebuild da imagem
+      - ./config:/app/config
+    environment:
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - DATABASE_URL=${DATABASE_URL:-}
+    restart: "no"
+
+  # ── Perfil GPU: NVIDIA ────────────────────────────────────────────────────
+  # Pré-requisito: nvidia-container-toolkit instalado no host.
+  # Execução: docker compose --profile gpu up
+  # Antes de executar, editar config/settings.yaml:
+  #   model.device: "cuda"
+  #   model.fp16: true
+  vehicle-counter-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vehicle-counter:latest
+    container_name: vehicle-counter-gpu
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./config:/app/config
+    environment:
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - DATABASE_URL=${DATABASE_URL:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: "no"
+    profiles:
+      - gpu
