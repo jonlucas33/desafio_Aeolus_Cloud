@@ -179,6 +179,8 @@ def main() -> None:
         direction=settings.counting.direction,
         min_displacement_px=settings.counting.min_displacement_px,
         class_vote_window=settings.counting.class_vote_window,
+        suv_aspect_ratio_threshold=settings.counting.suv_aspect_ratio_threshold,
+        truck_area_threshold=settings.counting.truck_area_threshold,
     )
     renderer = OverlayRenderer(
         settings=settings.rendering,
@@ -198,7 +200,11 @@ def main() -> None:
     ocr_worker: OCRWorker | None = None
     if settings.ocr.enabled:
         use_gpu = settings.model.device == "cuda"
-        plate_ocr = PlateOCR(languages=settings.ocr.languages, gpu=use_gpu)
+        plate_ocr = PlateOCR(
+            languages=settings.ocr.languages,
+            gpu=use_gpu,
+            confidence_threshold=settings.ocr.confidence_threshold,
+        )
         ocr_worker = OCRWorker(
             ocr_queue=ocr_queue, db_queue=db_queue, plate_ocr=plate_ocr
         )
@@ -258,6 +264,21 @@ def main() -> None:
                 }
 
                 crop = counter.get_best_crop(tid)
+                # Fallback: usa o crop do frame atual quando best_crop ainda não
+                # foi capturado (ex.: primeiro frame do veículo é o cruzamento).
+                if crop is None or crop.size == 0:
+                    track_at_crossing = next(
+                        (t for t in tracks if t.track_id == tid), None
+                    )
+                    if track_at_crossing is not None:
+                        x1_, y1_, x2_, y2_ = track_at_crossing.bbox_xyxy
+                        x1_ = max(0, int(x1_))
+                        y1_ = max(0, int(y1_))
+                        x2_ = min(frame.shape[1], int(x2_))
+                        y2_ = min(frame.shape[0], int(y2_))
+                        if x2_ > x1_ and y2_ > y1_:
+                            crop = frame[y1_:y2_, x1_:x2_]
+
                 frame_area = cap.frame_width * cap.frame_height
                 crop_qualifies = (
                     crop is not None

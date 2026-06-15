@@ -44,15 +44,21 @@ class YoloDetector:
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """Executa inferência em um frame e retorna apenas detecções de veículos.
 
+        Usa filtragem assimétrica por classe: o YOLO roda com base_conf_threshold
+        (baixo) para não perder motos; a máscara de pós-processamento aplica
+        motorcycle_threshold para motos (class_id=3) e default_class_threshold
+        para todos os demais veículos.
+
         Args:
             frame: Frame BGR em formato numpy (H, W, 3).
 
         Returns:
-            Lista de Detection filtrada pelas classes car/motorcycle/bus/truck.
+            Lista de Detection filtrada pelas classes car/motorcycle/bus/truck
+            com limiares de confiança por classe aplicados.
         """
         results = self._model(
             frame,
-            conf=self._settings.confidence_threshold,
+            conf=self._settings.base_conf_threshold,
             iou=self._settings.iou_threshold,
             device=self._settings.device,
             verbose=False,
@@ -64,7 +70,12 @@ class YoloDetector:
             confs = result.boxes.conf.cpu().numpy()
             clss = result.boxes.cls.cpu().numpy().astype(int)
 
-            for bbox, conf, cls_id in zip(boxes, confs, clss):
+            # Máscara assimétrica: limiar brando para motos, rigoroso para demais
+            moto_mask = (clss == 3) & (confs >= self._settings.motorcycle_threshold)
+            other_mask = (clss != 3) & (confs >= self._settings.default_class_threshold)
+            keep = moto_mask | other_mask
+
+            for bbox, conf, cls_id in zip(boxes[keep], confs[keep], clss[keep]):
                 if cls_id not in _VEHICLE_CLASS_IDS:
                     continue
                 detections.append(Detection(

@@ -13,13 +13,21 @@ import pytest
 from src.config import ModelSettings
 
 
-def _make_settings(device: str = "cpu") -> ModelSettings:
+def _make_settings(
+    device: str = "cpu",
+    base_conf_threshold: float = 0.35,
+    default_class_threshold: float = 0.45,
+    motorcycle_threshold: float = 0.35,
+) -> ModelSettings:
     return ModelSettings(
         weights="models/yolov8s.pt",
         confidence_threshold=0.45,
         iou_threshold=0.5,
         device=device,
         fp16=False,
+        base_conf_threshold=base_conf_threshold,
+        default_class_threshold=default_class_threshold,
+        motorcycle_threshold=motorcycle_threshold,
     )
 
 
@@ -124,6 +132,40 @@ def test_detect_returns_empty_list_when_no_vehicles(mocker) -> None:
     detections = detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
 
     assert detections == []
+
+
+def test_asymmetric_conf_filter_keeps_motorcycle_removes_low_conf_car(mocker) -> None:
+    """Filtro assimétrico por classe: carro a 0.40 removido, moto a 0.40 mantida.
+
+    Configuração:
+        default_class_threshold = 0.45  → carro(0.40) < 0.45 → DESCARTADO
+        motorcycle_threshold    = 0.35  → moto (0.40) >= 0.35 → MANTIDA
+    """
+    mock_yolo_cls = mocker.patch("src.detection.yolo_detector.YOLO")
+    mock_model = MagicMock()
+    mock_yolo_cls.return_value = mock_model
+    mock_model.return_value = [_make_yolo_result(
+        boxes=[[0.0, 0.0, 100.0, 100.0], [0.0, 0.0, 80.0, 80.0]],
+        confs=[0.40, 0.40],
+        clss=[2.0, 3.0],  # car a 0.40, motorcycle a 0.40
+    )]
+
+    from src.detection.yolo_detector import YoloDetector
+
+    detector = YoloDetector(_make_settings(
+        base_conf_threshold=0.35,
+        default_class_threshold=0.45,
+        motorcycle_threshold=0.35,
+    ))
+    detections = detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
+
+    assert len(detections) == 1, (
+        f"Esperado 1 detecção (moto), obtidas {len(detections)}: "
+        f"{[(d.class_name, d.confidence) for d in detections]}"
+    )
+    assert detections[0].class_id == 3
+    assert detections[0].class_name == "motorcycle"
+    assert detections[0].confidence == pytest.approx(0.40)
 
 
 def test_warmup_calls_model_n_times(mocker) -> None:

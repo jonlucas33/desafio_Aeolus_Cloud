@@ -6,7 +6,10 @@ video:
 
 model:
   weights: "models/yolov8n.pt"          # auto-download via ultralytics;
-  confidence_threshold: 0.45
+  confidence_threshold: 0.45            # mantido para retrocompatibilidade
+  base_conf_threshold: 0.35             # limiar passado ao YOLO (captura todas as motos)
+  default_class_threshold: 0.45         # limiar rigoroso para carros/caminhões/ônibus
+  motorcycle_threshold: 0.35            # limiar brando exclusivo para motos (class_id=3)
   iou_threshold: 0.5
   device: "cpu"                  # trocar para "cuda" quando GPU disponível
   fp16: false                    # fp16 requer CUDA; manter false em CPU
@@ -20,10 +23,13 @@ counting:
   direction: "any"                        # ambas as mãos da pista
   min_displacement_px: 5
   class_vote_window: 15
+  suv_aspect_ratio_threshold: 0.85       # h/w > threshold → suv_pickup (carro COCO)
+  truck_area_threshold: 0.02             # area_ratio < threshold → suv_pickup (caminhão COCO)
 
 ocr:
   enabled: true
-  min_bbox_area_ratio: 0.01
+  min_bbox_area_ratio: 0.005
+  confidence_threshold: 0.20
   languages: ["pt", "en"]
 
 database:

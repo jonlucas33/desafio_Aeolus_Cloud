@@ -94,12 +94,16 @@ class CrossingCounter:
         direction: str,
         min_displacement_px: int,
         class_vote_window: int,
+        suv_aspect_ratio_threshold: float = 0.85,
+        truck_area_threshold: float = 0.04,
     ) -> None:
         self._line_a: tuple[float, float] = (float(line_points[0][0]), float(line_points[0][1]))
         self._line_b: tuple[float, float] = (float(line_points[1][0]), float(line_points[1][1]))
         self._direction = direction
         self._min_displacement_px = min_displacement_px
         self._class_vote_window = class_vote_window
+        self._suv_aspect_ratio_threshold = suv_aspect_ratio_threshold
+        self._truck_area_threshold = truck_area_threshold
 
         # Idempotência: cada track_id é contado no máximo uma vez
         self._crossed_ids: set[int] = set()
@@ -112,6 +116,55 @@ class CrossingCounter:
         self._max_bbox_area: dict[int, float] = {}
         # Total acumulado
         self._total_count: int = 0
+
+    # ── Heurística de classificação ───────────────────────────────────────
+
+    def _refine_class(
+        self,
+        class_id: int,
+        bbox_xyxy: np.ndarray,
+        frame_area: float,
+    ) -> str:
+        """Refina a classe COCO em categorias de negócio via duas heurísticas.
+
+        Heurística 1 (carros, class_id=2): aspect_ratio = h/w.
+            Se h/w > suv_aspect_ratio_threshold → "suv_pickup" (veículo mais alto).
+            Caso contrário → "sedan_hatch".
+
+        Heurística 2 (caminhões/ônibus, class_id=5 ou 7): area_ratio = bbox_area / frame_area.
+            Se area_ratio < truck_area_threshold → "suv_pickup" (picape grande).
+            Caso contrário → "truck_bus".
+
+        Args:
+            class_id: Índice da classe COCO retornado pelo detector.
+            bbox_xyxy: Array [x1, y1, x2, y2] da detecção.
+            frame_area: Área total do frame em pixels (altura × largura).
+                        Quando 0, o filtro de área é ignorado e retorna "truck_bus".
+
+        Returns:
+            Categoria de negócio: "sedan_hatch", "suv_pickup", "truck_bus",
+            "motorcycle" ou "unknown".
+        """
+        x1, y1, x2, y2 = bbox_xyxy
+        w = max(1.0, float(x2 - x1))
+        h = max(1.0, float(y2 - y1))
+
+        if class_id == 3:  # motocicleta
+            return "motorcycle"
+
+        if class_id in (5, 7):  # ônibus / caminhão
+            if frame_area > 0:
+                area_ratio = (w * h) / frame_area
+                if area_ratio < self._truck_area_threshold:
+                    return "suv_pickup"
+            return "truck_bus"
+
+        if class_id == 2:  # carro
+            if (h / w) > self._suv_aspect_ratio_threshold:
+                return "suv_pickup"
+            return "sedan_hatch"
+
+        return "unknown"
 
     # ── Interface pública ─────────────────────────────────────────────────
 
@@ -131,16 +184,18 @@ class CrossingCounter:
             Lista de track_ids que cruzaram a linha virtual neste frame.
         """
         crossed_this_frame: list[int] = []
+        frame_area = float(frame.shape[0] * frame.shape[1]) if frame is not None else 0.0
 
         for track in tracks:
             tid = track.track_id
             centroid = track.centroid
             bbox = track.bbox_xyxy
 
-            # 1. Registrar voto de classe
+            # 1. Refinar classe e registrar voto
             if tid not in self._class_votes:
                 self._class_votes[tid] = Counter()
-            self._class_votes[tid][track.class_name] += 1
+            refined = self._refine_class(track.class_id, bbox, frame_area)
+            self._class_votes[tid][refined] += 1
 
             # 2. Atualizar best-crop buffer se frame disponível
             if frame is not None:

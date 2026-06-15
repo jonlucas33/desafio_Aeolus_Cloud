@@ -68,17 +68,21 @@ class PlateOCR:
     Args:
         languages: Lista de idiomas para o EasyOCR (padrão: ['en']).
         gpu: Se True, usa GPU para inferência (padrão: False).
+        confidence_threshold: Confiança mínima para aceitar um resultado de OCR.
     """
 
     def __init__(
         self,
         languages: list[str] | None = None,
         gpu: bool = False,
+        confidence_threshold: float = _MIN_CONFIDENCE,
     ) -> None:
         self._languages = languages or ["en"]
+        self._min_confidence = confidence_threshold
         self._reader = easyocr.Reader(self._languages, gpu=gpu, verbose=False)
         logger.info(
-            "PlateOCR inicializado (idiomas=%s, gpu=%s)", self._languages, gpu
+            "PlateOCR inicializado (idiomas=%s, gpu=%s, conf_threshold=%.2f)",
+            self._languages, gpu, self._min_confidence,
         )
 
     def read(self, crop: np.ndarray) -> tuple[str | None, float | None]:
@@ -107,7 +111,7 @@ class PlateOCR:
         # Pegar o candidato de maior confiança
         _, text, confidence = max(results, key=lambda r: r[2])
 
-        if confidence < _MIN_CONFIDENCE:
+        if confidence < self._min_confidence:
             return None, None
 
         plate = _validate_plate(text)

@@ -42,6 +42,8 @@ def make_counter(
     direction: str = "any",
     min_displacement_px: int = 5,
     class_vote_window: int = 15,
+    suv_aspect_ratio_threshold: float = 0.85,
+    truck_area_threshold: float = 0.04,
 ):
     from src.counting.crossing_logic import CrossingCounter
 
@@ -52,6 +54,8 @@ def make_counter(
         direction=direction,
         min_displacement_px=min_displacement_px,
         class_vote_window=class_vote_window,
+        suv_aspect_ratio_threshold=suv_aspect_ratio_threshold,
+        truck_area_threshold=truck_area_threshold,
     )
 
 
@@ -147,15 +151,20 @@ def test_count_property_reflects_total_crossings() -> None:
 
 
 def test_get_vehicle_class_returns_majority_vote() -> None:
-    """get_vehicle_class deve retornar a classe com mais votos."""
+    """get_vehicle_class deve retornar a classe refinada com mais votos.
+
+    class_id=3 (motorcycle) → "motorcycle" sempre.
+    class_id=2 (car) com bbox 100x100 (aspect_ratio=1.0 > 0.85) → "suv_pickup".
+    3 votos de motorcycle batem 2 votos de suv_pickup.
+    """
     counter = make_counter()
 
     for _ in range(3):
-        counter.update([make_track(1, centroid=(640, 400), class_name="car")])
+        counter.update([make_track(1, centroid=(640, 400), class_id=3)])
     for _ in range(2):
-        counter.update([make_track(1, centroid=(640, 410), class_name="motorcycle")])
+        counter.update([make_track(1, centroid=(640, 410), class_id=2)])
 
-    assert counter.get_vehicle_class(1) == "car"
+    assert counter.get_vehicle_class(1) == "motorcycle"
 
 
 def test_get_vehicle_class_returns_unknown_for_missing_id() -> None:
@@ -233,6 +242,62 @@ def test_crossing_detected_when_centroid_lands_exactly_on_line() -> None:
         "a fórmula (d1>0)!=(d2>0) perde este caso"
     )
     assert counter.count == 1
+
+
+# ── Testes AÇÃO 1: heurística de duas camadas (_refine_class) ────────────────
+
+def test_refine_class_wide_car_bbox_returns_sedan_hatch() -> None:
+    """Carro COCO (class_id=2) com bbox larga e achatada (w>h) → 'sedan_hatch'.
+
+    Bbox 200x80: aspect_ratio = 80/200 = 0.40 < 0.85 → sedan_hatch.
+    """
+    counter = make_counter(suv_aspect_ratio_threshold=0.85, truck_area_threshold=0.04)
+    bbox = np.array([0.0, 0.0, 200.0, 80.0], dtype=np.float32)
+    result = counter._refine_class(class_id=2, bbox_xyxy=bbox, frame_area=1_000_000.0)
+    assert result == "sedan_hatch", (
+        f"Bbox larga (aspect_ratio=0.40 < 0.85) deve ser 'sedan_hatch', obteve '{result}'"
+    )
+
+
+def test_refine_class_tall_car_bbox_returns_suv_pickup() -> None:
+    """Carro COCO (class_id=2) com bbox alta e estreita (h>w) → 'suv_pickup'.
+
+    Bbox 100x150: aspect_ratio = 150/100 = 1.50 > 0.85 → suv_pickup.
+    """
+    counter = make_counter(suv_aspect_ratio_threshold=0.85, truck_area_threshold=0.04)
+    bbox = np.array([0.0, 0.0, 100.0, 150.0], dtype=np.float32)
+    result = counter._refine_class(class_id=2, bbox_xyxy=bbox, frame_area=1_000_000.0)
+    assert result == "suv_pickup", (
+        f"Bbox alta (aspect_ratio=1.50 > 0.85) deve ser 'suv_pickup', obteve '{result}'"
+    )
+
+
+def test_refine_class_small_truck_bbox_returns_suv_pickup() -> None:
+    """Caminhão COCO (class_id=7) com area_ratio pequena → 'suv_pickup'.
+
+    Bbox 100x100 (area=10 000), frame_area=1 000 000 → ratio=0.01 < 0.04.
+    Heurística: caminhão pequeno na imagem é na verdade SUV/picape.
+    """
+    counter = make_counter(suv_aspect_ratio_threshold=0.85, truck_area_threshold=0.04)
+    bbox = np.array([0.0, 0.0, 100.0, 100.0], dtype=np.float32)
+    result = counter._refine_class(class_id=7, bbox_xyxy=bbox, frame_area=1_000_000.0)
+    assert result == "suv_pickup", (
+        f"Caminhão com area_ratio=0.01 < 0.04 deve ser 'suv_pickup', obteve '{result}'"
+    )
+
+
+def test_refine_class_large_truck_bbox_returns_truck_bus() -> None:
+    """Caminhão COCO (class_id=7) com area_ratio grande → 'truck_bus'.
+
+    Bbox 250x200 (area=50 000), frame_area=1 000 000 → ratio=0.05 > 0.04.
+    Heurística: objeto grande na imagem é realmente um caminhão/ônibus.
+    """
+    counter = make_counter(suv_aspect_ratio_threshold=0.85, truck_area_threshold=0.04)
+    bbox = np.array([0.0, 0.0, 250.0, 200.0], dtype=np.float32)
+    result = counter._refine_class(class_id=7, bbox_xyxy=bbox, frame_area=1_000_000.0)
+    assert result == "truck_bus", (
+        f"Caminhão com area_ratio=0.05 > 0.04 deve ser 'truck_bus', obteve '{result}'"
+    )
 
 
 def test_jitter_freeze_preserves_reference_and_enables_crossing_detection() -> None:

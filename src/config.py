@@ -27,6 +27,9 @@ class ModelSettings(BaseModel):
 
     weights: str
     confidence_threshold: float = Field(gt=0.0, lt=1.0)
+    base_conf_threshold: float = Field(default=0.35, gt=0.0, lt=1.0)
+    default_class_threshold: float = Field(default=0.45, gt=0.0, lt=1.0)
+    motorcycle_threshold: float = Field(default=0.35, gt=0.0, lt=1.0)
     iou_threshold: float = Field(gt=0.0, lt=1.0)
     device: Literal["cuda", "cpu", "mps"]
     fp16: bool
@@ -46,6 +49,8 @@ class CountingSettings(BaseModel):
     direction: Literal["any", "top_to_bottom", "bottom_to_top"]
     min_displacement_px: int = Field(gt=0)
     class_vote_window: int = Field(gt=0)
+    suv_aspect_ratio_threshold: float = Field(default=0.85, gt=0.0, lt=10.0)
+    truck_area_threshold: float = Field(default=0.04, gt=0.0, lt=1.0)
 
 
 class OCRSettings(BaseModel):
@@ -53,6 +58,7 @@ class OCRSettings(BaseModel):
 
     enabled: bool
     min_bbox_area_ratio: float = Field(gt=0.0, lt=1.0)
+    confidence_threshold: float = Field(default=0.20, gt=0.0, lt=1.0)
     languages: list[str]
 
 
