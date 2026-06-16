@@ -1,19 +1,15 @@
 #!/bin/bash
-# Entrypoint do container vehicle-counter.
-# Verifica o modelo de detecção e inicia o pipeline.
 set -e
 
-MODEL_PATH="${MODEL_PATH:-models/yolov8n.pt}"
-
-# Se o modelo não estiver no volume montado, baixa via Ultralytics.
-# A Ultralytics armazena automaticamente em $HOME/.config/Ultralytics/ como
-# fallback; aqui forçamos o path do projeto para persistência via volume.
-if [ ! -f "$MODEL_PATH" ]; then
-    echo "[entrypoint] Modelo não encontrado em $MODEL_PATH — baixando..."
-    python scripts/download_models.py
-else
-    echo "[entrypoint] Modelo encontrado: $MODEL_PATH"
+# Download YOLOv8s if not present (default model for v1.3.0)
+if [ ! -f "models/yolov8s.pt" ]; then
+    echo "[entrypoint] Downloading YOLOv8s model..."
+    python -c "from ultralytics import YOLO; YOLO('yolov8s.pt')"
+    mv yolov8s.pt models/ 2>/dev/null || true
 fi
 
-echo "[entrypoint] Iniciando pipeline..."
-exec python main.py "$@"
+# fast-alpr models are downloaded automatically on first use
+# to ~/.cache/open-image-models and ~/.cache/fast-plate-ocr
+
+echo "[entrypoint] Starting pipeline..."
+exec python main.py --config config/settings.yaml "$@"
