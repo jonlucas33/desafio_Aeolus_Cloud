@@ -318,6 +318,10 @@ def _crossed(line_a, line_b, p_prev, p_curr) -> bool:
     return d1 * d2 < 0 or (d1 == 0) != (d2 == 0)
 ```
 
+> **Nota de implementação:** A condição `d1 * d2 < 0 or (d1 == 0) != (d2 == 0)`
+> protege contra o comportamento de `-0.0` em IEEE 754, que faria a versão naïve
+> `(d1 > 0) != (d2 > 0)` perder silenciosamente cruzamentos exatos sobre a linha.
+
 ### Filtro de jitter e direção
 
 ```python

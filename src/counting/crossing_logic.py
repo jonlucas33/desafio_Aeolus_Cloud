@@ -23,7 +23,15 @@ def _side(
     bx: float, by: float,
     px: float, py: float,
 ) -> float:
-    """Sinal do produto vetorial 2D: positivo se P está à esquerda de AB."""
+    """Calcula de qual lado da linha virtual o ponto se encontra.
+
+    Retorna valor positivo, negativo ou zero conforme o produto vetorial 2D.
+
+    Nota: a condição de cruzamento usa `d1 * d2 < 0 or (d1 == 0) != (d2 == 0)`
+    em vez de `(d1 > 0) != (d2 > 0)` para capturar corretamente o caso em que
+    o centróide cai exatamente sobre a linha — situação que a versão naïve perde
+    silenciosamente por causa do comportamento de -0.0 em IEEE 754.
+    """
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax)
 
 

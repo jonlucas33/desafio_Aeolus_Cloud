@@ -4,6 +4,16 @@ Sistema de visão computacional em tempo real que detecta, rastreia e contabiliz
 
 ---
 
+## Demo
+
+![Pipeline de contagem de veículos em rodovia BR-232](docs/demo.gif)
+
+> 90 segundos de rodovia BR-232 · 109 veículos detectados · 65 placas lidas · 4.5 FPS em CPU
+
+📥 [Download do vídeo completo anotado (result_final.mp4)](https://github.com/jonlucas33/desafio_Aeolus_Cloud/releases/download/v1.3.0/result_final.mp4)
+
+---
+
 ## Sumário
 
 - [Visão Geral](#visão-geral)
@@ -86,8 +96,8 @@ A fórmula `_side(A, B, P) = (B.x − A.x)(P.y − A.y) − (B.y − A.y)(P.x �
 ```python
 return d1 * d2 < 0 or (d1 == 0) != (d2 == 0)
 ```
-
-Esta fórmula captura o caso em que o centróide cai *exatamente* sobre a linha (situação que a condição naïve `(d1 > 0) != (d2 > 0)` perde silenciosamente por causa do comportamento de `-0.0` em IEEE 754).
+Detalhes de implementação
+em `ARCHITECTURE.md` e `src/counting/crossing_logic.py`.
 
 **3. Jitter freeze**
 
@@ -286,24 +296,13 @@ Todos os parâmetros ajustáveis ficam em `config/settings.yaml`. Nunca use cons
 | `timestamp` | DATETIME | NOT NULL | Instante UTC do cruzamento |
 | `session_id` | VARCHAR(36) | NOT NULL | UUID da execução do pipeline |
 
-**Índices:** `track_id`, `session_id`
+---
 
-```sql
--- Contagem por classe
-SELECT vehicle_class, COUNT(*) AS total
-FROM vehicle_events
-GROUP BY vehicle_class
-ORDER BY total DESC;
+## Persistência de Dados
 
--- Taxa de detecção de placas
-SELECT
-    COUNT(*) AS total_veiculos,
-    SUM(CASE WHEN plate_text IS NOT NULL THEN 1 ELSE 0 END) AS com_placa,
-    ROUND(
-        100.0 * SUM(CASE WHEN plate_text IS NOT NULL THEN 1 ELSE 0 END) / COUNT(*), 1
-    ) AS pct_placas
-FROM vehicle_events;
-```
+Todos os eventos são gravados de forma assíncrona em um banco SQLite (`events_final.db`), permitindo consultas analíticas sem bloquear o pipeline de inferência em tempo real.
+
+Para visualizar o schema completo, modelagem das tabelas e exemplos de queries, consulte o documento técnico [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -314,9 +313,10 @@ Medição executada no hardware de desenvolvimento (vídeo 1920×1080, modo `rea
 
 | Métrica | v1.2.1 (EasyOCR + YOLOv8n) | v1.3.0 (fast-alpr + YOLOv8s) | Delta |
 |---|---|---|---|
-| Ambiente | CPU (Intel i7, Python 3.14, Windows 11) | idem | — |
+| Ambiente | CPU (Intel Core Ultra 5 125H, Python 3.14, Windows 11) | idem | — |
 | Duração do vídeo | 90 s (2 700 frames) | idem | — |
 | FPS médio | 4.78 | **4.5** | -0.28 |
+| Tempo de processamento | ~9.0 min | **~9.5 min** | +0.5 min |
 | Veículos contados | 103 | **109** | **+6** |
 | Placas lidas | 4 | **65** | **+61** |
 | Taxa OCR | 3.9% | **59.6%** | +55.7% |
@@ -328,22 +328,7 @@ Medição executada no hardware de desenvolvimento (vídeo 1920×1080, modo `rea
 > `put_nowait()` garante que o ONNX não sature os cores de CPU em background,
 > mantendo o pipeline de detecção a plena velocidade.
 
-## Performance Esperada
-
-Medições com YOLOv8s em vídeo 1920×1080 (configuração v1.3.0):
-
-| Configuração | FPS (pipeline) | Observação |
-|---|---|---|
-| GPU RTX 3060 + CUDA FP16 | 55–70 | fast-alpr em CUDA; OCR não impacta FPS |
-| GPU RTX 3060 + CUDA FP32 | 40–55 | Idem |
-| CPU Intel i7 (8 cores) | ~5.5 | Medido neste projeto em Python 3.14 / Windows 11 |
-| CPU Intel i5 (4 cores) | 3–5 | ocr_queue maxsize=10 previne CPU starvation |
-
-> Para produção com câmera ao vivo em rodovia, GPU é fortemente recomendada. Em CPU, use `realtime: false` apenas para vídeos pré-gravados.
-
----
-
-## Modelos Necessários
+## Modelos
 
 | Arquivo | Destino | Como obter |
 |---|---|---|
@@ -354,10 +339,6 @@ Medições com YOLOv8s em vídeo 1920×1080 (configuração v1.3.0):
 
 > Os modelos ONNX do fast-alpr são cacheados globalmente e não precisam estar em `models/`.
 > Apenas `yolov8s.pt` e `license_plate_detector.pt` devem estar presentes localmente.
-
----
-
-## Modelos Utilizados
 
 ### Detecção: YOLOv8s (Ultralytics)
 
@@ -399,15 +380,4 @@ diferente por variações de timing com threads OCR ativas.
 - **fast-alpr CUDA:** com GPU disponível, o ONNX Runtime utiliza CUDAExecutionProvider
   automaticamente, eliminando completamente a contenção de CPU.
 
-## Demonstração do resultado
-
-O arquivo de vídeo processado excede o limite de tamanho do repositório.
-
-[Baixe ou assista ao vídeo processado](https://github.com/jonlucas33/desafio_Aeolus_Cloud/releases/download/v1.3.0/result_final.mp4)
-
-O arquivo `data/inputs/video_cortado.mp4` representa os primeiros 90 segundos
-do vídeo original. O corte facilita o clone e garante execução rápida via
-Docker para avaliação, mantendo amostragem de todas as classes de veículos.
-
----
 
