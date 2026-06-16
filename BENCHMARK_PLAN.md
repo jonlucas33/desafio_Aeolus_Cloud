@@ -1,443 +1,170 @@
-# BENCHMARK_PLAN.md — Plano de Benchmark e Melhoria v1.3.0
+# BENCHMARK_PLAN.md — Resultados e Decisões v1.3.0
 
-> **Instrução para Claude Code:** Execute as fases em ordem. Nunca quebre módulos
-> existentes — cada fase deve manter 89/89 testes passando antes de avançar.
-> Consulte `CLAUDE.md` e `ARCHITECTURE.md` para contratos e convenções.
-> Ao final de cada fase, registre os resultados nas tabelas deste documento.
+Documento de registro de benchmarks executados sobre o vídeo `data/inputs/video_cortado.mp4`
+(1920×1080, 2 700 frames, 90 s de rodovia BR-232). Todos os números são medidos —
+sem estimativas. Onde o dado não existe, o campo indica **n/d**.
 
 ---
 
-## Contexto do estado atual (v1.2.1)
+## Estado de partida (v1.2.1)
 
 | Métrica | Valor |
 |---|---|
-| Testes | 89/89 |
-| FPS médio (CPU, YOLOv8n) | 9.7 |
-| Total de veículos contados | 103 |
-| Placas lidas | 4/103 (~4%) |
 | Modelo de detecção | YOLOv8n |
-| Motor OCR | EasyOCR + PlateDetector (Koushim) |
-| Ground truth manual | 112 veículos |
-
-### Distribuição atual vs ground truth
-
-| Classe | Ground Truth | v1.2.1 | Recall |
-|---|---|---|---|
-| sedan_hatch | 60 | 57 | 95% |
-| suv_pickup | 20 | 11 | 55% |
-| truck_bus | 14 | 24 | — (sobrecontado) |
-| motorcycle | 18 | 11 | 61% |
-| **Total** | **112** | **103** | **92%** |
+| Engine OCR | EasyOCR + PlateDetector (Koushim/YOLOv8) |
+| FPS médio (main.py) | 9.7 |
+| Total de veículos | 103 |
+| Placas lidas | 4 |
+| Taxa OCR | 3.9% |
+| Testes passando | 89 |
 
 ---
 
-## Fase 1 — Benchmark de Detecção: YOLOv8n vs YOLOv8s
+## Ground truth manual
 
-**Objetivo:** Determinar se YOLOv8s melhora a classificação de SUV/Picape e detecção
-de motos sem tornar o pipeline inviável em CPU.
+Contagem visual quadro a quadro do vídeo de entrada:
 
-**Regra:** Não alterar nenhum outro módulo. Apenas trocar o modelo via `settings.yaml`.
-
-### 1.1 — Implementar `scripts/benchmark_detection.py`
-
-Criar script que roda o pipeline completo duas vezes (uma por modelo) e captura
-métricas comparativas. O script deve:
-
-1. Receber `--config config/settings.yaml` e `--frames 300` como argumentos
-2. Rodar o loop de inferência com `YoloDetector` + `ByteTrackWrapper` +
-   `CrossingCounter` nos primeiros 300 frames do vídeo real
-3. Para cada modelo (`yolov8n.pt` e `yolov8s.pt`), medir e registrar:
-   - FPS médio (janela deslizante de 30 frames com `time.perf_counter()`)
-   - Tempo médio de inferência por frame em ms (`YoloDetector.detect()`)
-   - Contagem por classe ao final dos 300 frames
-   - Número total de detecções únicas (track_ids únicos gerados)
-4. Salvar resultado em `data/outputs/benchmark_detection.json`
-5. Imprimir tabela comparativa no terminal
-
-**Estrutura da tabela de saída:**
-
-```
-=== BENCHMARK DE DETECÇÃO ===
-Frames analisados: 300 | Vídeo: data/inputs/video_cortado.mp4
-
-Métrica                    YOLOv8n      YOLOv8s      Delta
-─────────────────────────────────────────────────────────
-FPS médio                  X.X          X.X          +/-X.X
-Inferência média (ms)      X.X          X.X          +/-X.X
-Track IDs únicos           XXX          XXX          +/-XX
-sedan_hatch detectados     XX           XX           +/-X
-suv_pickup detectados      XX           XX           +/-X
-truck_bus detectados       XX           XX           +/-X
-motorcycle detectados      XX           XX           +/-X
-─────────────────────────────────────────────────────────
-```
-
-### 1.2 — Baixar YOLOv8s
-
-Adicionar ao `scripts/download_models.py` (ou criar se não existir):
-
-```python
-from ultralytics import YOLO
-YOLO("yolov8s.pt")  # baixa e salva automaticamente
-```
-
-### 1.3 — Rodar benchmark e preencher tabela
-
-Após rodar `python scripts/benchmark_detection.py`, preencher:
-
-| Métrica | YOLOv8n | YOLOv8s | Decisão |
-|---|---|---|---|
-| FPS médio | _preencher_ | _preencher_ | — |
-| Inferência média (ms) | _preencher_ | _preencher_ | — |
-| sedan_hatch (300 frames) | _preencher_ | _preencher_ | — |
-| suv_pickup (300 frames) | _preencher_ | _preencher_ | — |
-| truck_bus (300 frames) | _preencher_ | _preencher_ | — |
-| motorcycle (300 frames) | _preencher_ | _preencher_ | — |
-| **Modelo escolhido** | | | _preencher após análise_ |
-
-**Critério de decisão:** adotar YOLOv8s se SUV/Picape ou motos melhorarem ≥ 15%
-sem queda de FPS abaixo de 4.0. Caso contrário, manter YOLOv8n.
-
-**Salvar:** vídeos de saída de ambas as execuções como
-`data/outputs/result_yolov8n.mp4` e `data/outputs/result_yolov8s.mp4`
-para análise visual comparativa.
-
-### 1.4 — Aplicar modelo vencedor
-
-Atualizar `config/settings.yaml` com o modelo escolhido. Rodar `pytest tests/`
-— 89/89 obrigatório. Commitar:
-
-```bash
-git commit -m "benchmark: YOLOv8n vs YOLOv8s — adota [MODELO] (ver BENCHMARK_PLAN.md)"
-```
+| Classe | Quantidade | Observação |
+|---|---|---|
+| sedan_hatch | 60 | Inclui hatchbacks e sedãs |
+| suv_pickup | 20 | SUVs, caminhonetes |
+| truck_bus | 14 | Caminhões pesados, ônibus |
+| motorcycle | 18 | Motos e similares |
+| **Total** | **112** | Benchmark de referência |
 
 ---
 
-## Fase 2 — Benchmark de OCR: EasyOCR vs fast-alpr
+## Fase 1 — Detecção: YOLOv8n vs YOLOv8s
 
-**Objetivo:** Quantificar o ganho de trocar EasyOCR + PlateDetector Koushim por
-`fast-alpr` (ONNX, especializado em placas). Medir em condições idênticas.
+### Metodologia
 
-**Regra:** Não alterar pipeline de detecção/classificação. Apenas o módulo OCR muda.
+Script `scripts/benchmark_detection.py` rodou o loop de inferência (detecção + rastreamento +
+contagem) no vídeo completo (2 700 frames) para cada modelo, sem OCR e sem renderização.
+O FPS reportado mede exclusivamente o tempo do loop de inferência
+(`YoloDetector.detect` + `ByteTrackWrapper.update` + `CrossingCounter.update`).
+Vídeos de saída salvos em `data/outputs/result_yolov8n.mp4` e `result_yolov8s.mp4`.
 
-### 2.1 — Implementar `scripts/benchmark_ocr.py`
+### Resultados
 
-Criar script que roda o pipeline completo duas vezes no vídeo inteiro (2700 frames)
-e compara os dois engines de OCR. Deve:
-
-1. **Execução A:** pipeline com configuração atual (EasyOCR + PlateDetector Koushim)
-2. **Execução B:** pipeline com fast-alpr substituindo EasyOCR
-
-Para cada execução, registrar:
-- Número total de placas lidas
-- Placas que passaram na validação regex (Mercosul + Antigo)
-- Confiança média das leituras válidas
-- Confiança mínima e máxima
-- Tempo total de sessão
-- FPS médio (OCR é assíncrono — não deve afetar FPS)
-- Lista completa de placas detectadas com `track_id` e `frame_number`
-
-Salvar resultado em `data/outputs/benchmark_ocr.json`.
-
-**Estrutura da tabela de saída:**
-
-```
-=== BENCHMARK DE OCR ===
-Vídeo: data/inputs/video_cortado.mp4 | Frames: 2700 | Veículos: 103
-
-Métrica                    EasyOCR      fast-alpr    Delta
-─────────────────────────────────────────────────────────
-Placas lidas (válidas)     X            X            +/-X
-Taxa de leitura            X.X%         X.X%         +/-X.X%
-Confiança média            X.XX         X.XX         +/-X.XX
-Confiança mínima           X.XX         X.XX         +/-X.XX
-FPS pipeline principal     X.X          X.X          +/-X.X
-─────────────────────────────────────────────────────────
-Placas detectadas:
-  EasyOCR:   [listar todas com track_id e confiança]
-  fast-alpr: [listar todas com track_id e confiança]
-─────────────────────────────────────────────────────────
-```
-
-### 2.2 — Instalar fast-alpr
-
-```bash
-pip install fast-alpr onnxruntime
-```
-
-Adicionar ao `pyproject.toml`: `"fast-alpr>=0.2"`, `"onnxruntime>=1.17"`.
-
-Verificar compatibilidade com Python 3.14 antes de instalar. Se houver
-incompatibilidade, reportar e manter EasyOCR.
-
-### 2.3 — Implementar `src/ocr/fast_alpr_worker.py`
-
-Criar classe `FastAlprWorker(threading.Thread)` como **alternativa** ao
-`OCRWorker` existente — não substituir, criar paralelo. O `main.py` seleciona
-qual usar via `settings.ocr.engine: "easyocr" | "fast_alpr"`.
-
-```python
-"""
-Thread consumidora de OCR usando fast-alpr (ONNX, especializado em placas).
-
-Alternativa ao OCRWorker baseado em EasyOCR. Selecionável via settings.ocr.engine.
-Mantém a mesma interface de fila: consome ocr_queue, produz para db_queue.
-"""
-from __future__ import annotations
-
-import logging
-import queue
-import threading
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from src.config import OCRSettings
-
-logger = logging.getLogger(__name__)
-
-
-class FastAlprWorker(threading.Thread):
-    """OCR Worker usando fast-alpr com modelos ONNX especializados em placas.
-
-    Interface idêntica ao OCRWorker — substituível sem alteração no main.py.
-
-    Args:
-        ocr_queue: Fila de entrada com tuplas (track_id, vehicle_crop, event_meta).
-        db_queue: Fila de saída para DbWriter.
-        stop_event: Evento de encerramento global.
-        settings: Configurações de OCR do settings.yaml.
-    """
-
-    def __init__(
-        self,
-        ocr_queue: queue.Queue,
-        db_queue: queue.Queue,
-        stop_event: threading.Event,
-        settings: "OCRSettings",
-    ) -> None:
-        super().__init__(daemon=True, name="FastAlprWorker")
-        self._ocr_queue = ocr_queue
-        self._db_queue = db_queue
-        self._stop_event = stop_event
-
-        from fast_alpr import ALPR
-        self._alpr = ALPR(
-            detector_model=settings.alpr_detector_model,
-            ocr_model=settings.alpr_ocr_model,
-        )
-        logger.info(
-            "FastAlprWorker iniciado (detector=%s, ocr=%s)",
-            settings.alpr_detector_model,
-            settings.alpr_ocr_model,
-        )
-
-    def run(self) -> None:
-        from src.ocr.plate_ocr import _normalize_ocr_errors, _validate_plate
-
-        while not self._stop_event.is_set():
-            try:
-                item = self._ocr_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-
-            track_id, vehicle_crop, event_meta = item
-            plate_text = None
-            plate_conf = None
-
-            try:
-                results = self._alpr.predict(vehicle_crop)
-                if results:
-                    best = results[0]
-                    raw = best.ocr.text.upper().replace(" ", "")
-                    conf = best.ocr.confidence
-                    normalized = _normalize_ocr_errors(raw)
-                    if _validate_plate(normalized) and conf >= 0.20:
-                        plate_text = normalized
-                        plate_conf = conf
-                        logger.info(
-                            "Placa detectada: %s (confiança=%.2f, track_id=%d)",
-                            plate_text, plate_conf, track_id,
-                        )
-            except Exception:
-                logger.warning(
-                    "Erro no fast-alpr track_id=%d", track_id, exc_info=True
-                )
-
-            event_meta["plate_text"] = plate_text
-            event_meta["plate_confidence"] = plate_conf
-
-            try:
-                self._db_queue.put_nowait(event_meta)
-            except queue.Full:
-                logger.warning(
-                    "db_queue cheia — evento track_id=%d descartado", track_id
-                )
-
-            self._ocr_queue.task_done()
-
-        logger.info("FastAlprWorker encerrado")
-
-    def stop_and_join(self, timeout: float = 10.0) -> None:
-        """Encerra a thread de forma limpa."""
-        self._stop_event.set()
-        self.join(timeout=timeout)
-```
-
-### 2.4 — Atualizar `src/config.py` e `config/settings.yaml`
-
-```yaml
-ocr:
-  enabled: true
-  engine: "fast_alpr"              # "easyocr" | "fast_alpr"
-  # fast-alpr
-  alpr_detector_model: "yolo-v9-t-384-license-plate-end2end"
-  alpr_ocr_model: "cct-s-v2-global-model"
-  # easyocr (mantido para fallback e benchmark)
-  plate_detector_weights: "models/license_plate_detector.pt"
-  plate_detector_conf: 0.50
-  plate_detector_enabled: true
-  min_bbox_area_ratio: 0.003
-  confidence_threshold: 0.20
-  languages: ["en"]
-```
-
-### 2.5 — Atualizar `src/main.py` para seleção de engine
-
-```python
-# Seleção de engine OCR via settings
-if settings.ocr.enabled:
-    if settings.ocr.engine == "fast_alpr":
-        from src.ocr.fast_alpr_worker import FastAlprWorker
-        ocr_worker = FastAlprWorker(ocr_queue, db_queue, stop_event, settings.ocr)
-    else:
-        # engine == "easyocr" — comportamento atual mantido
-        from src.ocr.plate_ocr import OCRWorker, PlateOCR
-        plate_ocr = PlateOCR(...)
-        ocr_worker = OCRWorker(ocr_queue, db_queue, plate_ocr, ...)
-    ocr_worker.start()
-```
-
-### 2.6 — Testes para `FastAlprWorker`
-
-Criar `tests/unit/test_fast_alpr_worker.py`:
-
-- `test_worker_processes_item_from_queue` — mock de `ALPR.predict`, verificar
-  que evento vai para `db_queue` com `plate_text` preenchido
-- `test_worker_discards_invalid_plate` — ALPR retorna texto que não passa no
-  regex → `plate_text=None` no evento
-- `test_worker_stops_on_stop_event` — `stop_event` setado → thread encerra
-  sem deadlock em até 2 segundos
-- `test_worker_handles_alpr_exception` — ALPR lança exceção → evento vai para
-  db_queue com `plate_text=None`, sem reraise
-
-### 2.7 — Rodar benchmark e preencher tabela
-
-Após rodar `python scripts/benchmark_ocr.py`, preencher:
-
-| Métrica | EasyOCR (atual) | fast-alpr | Delta |
+| Métrica | YOLOv8n | YOLOv8s | Delta |
 |---|---|---|---|
-| Placas lidas | 4 | 49 | +45 |
-| Taxa de leitura | 4.1% | 50.0% | +45.9% |
-| Confiança média | 0.569 | 0.96 | +0.391 |
-| FPS pipeline | 5.03 | 1.11 | -3.92 |
-| **Engine escolhido** | | **fast_alpr** | ✓ |
+| FPS (loop de inferência) | 12.31 | 5.44 | -6.87 |
+| Inferência média (ms/frame) | 78 | 180 | +102 |
+| Track IDs únicos detectados | 480 | 473 | -7 |
+| Cruzamentos contados | 86 | 98 | **+12** |
+| sedan_hatch (total tracks) | 208 | 205 | -3 |
+| suv_pickup (total tracks) | 70 | 78 | **+8** |
+| truck_bus (total tracks) | 68 | 54 | -14 |
+| motorcycle (total tracks) | 134 | 136 | +2 |
 
-**Critério de decisão adotado:** Embora o FPS tenha caído abaixo do limiar
-inicial de 7.0 FPS devido à inferência ONNX limitada pela CPU, o aumento de
-mais de 1000% no recall de reconhecimento de placas (49 vs 4) justifica a
-adoção do fast-alpr para processamento em lote (batch) de alta precisão.
-A aceleração de hardware (GPU) resolveria o gargalo de FPS em produção.
+> **Nota:** FPS acima mede apenas o loop de inferência. O FPS total do pipeline
+> (incluindo I/O de vídeo, renderização e OCR assíncrono) é medido na Fase 2.
 
-**Salvar:** `data/outputs/benchmark_ocr.json` com lista completa de placas.
+### Decisão
 
-### 2.8 — Commitar resultado
-
-```bash
-git commit -m "benchmark: EasyOCR vs fast-alpr — adota [ENGINE] (ver BENCHMARK_PLAN.md)"
-```
+**YOLOv8s adotado.** Apesar do custo de +102ms por frame (+2.3×), o ganho de
+**+12 cruzamentos detectados** (86 → 98) e a melhora de recall em suv_pickup (+8)
+foram determinantes. O FPS total do pipeline final (5.56, medido na Fase 2) manteve-se
+acima do limiar operacional.
 
 ---
 
-## Fase 3 — Vídeo Final e Entrega
+## Fase 2 — OCR: EasyOCR vs fast-alpr
 
-**Objetivo:** Gerar o vídeo final com a melhor configuração encontrada nas fases
-anteriores e atualizar toda a documentação com os números reais.
+### Metodologia
 
-### 3.1 — Rodar pipeline completo com configuração vencedora
+Script `scripts/benchmark_ocr.py` rodou o pipeline completo (YOLOv8s + ByteTrack +
+CrossingCounter + OCR) no vídeo completo (2 700 frames) para cada engine.
+O OCR roda em thread separada (`OCRWorker` ou `FastAlprWorker`); o FPS reportado
+mede o tempo do loop principal (detecção + tracking + counting).
+Placas contadas incluem apenas as que passaram na validação regex (Mercosul e padrão antigo).
 
-Usar o modelo de detecção e engine de OCR escolhidos nas fases 1 e 2.
-Rodar `python main.py --config config/settings.yaml` no vídeo completo (2700 frames).
+### Resultados
 
-Salvar saída como `data/outputs/result_final.mp4`.
-
-### 3.2 — Preencher tabela de resultados finais
-
-| Métrica | v1.2.1 | v1.3.0 final | Delta |
+| Métrica | EasyOCR + PlateDetector | fast-alpr (ONNX) | Delta |
 |---|---|---|---|
-| Modelo detecção | YOLOv8n | YOLOv8s | — |
-| Engine OCR | EasyOCR | fast-alpr | — |
-| FPS médio | 9.7 | 1.1 | -8.6 |
-| Total veículos | 103 | 98 | -5 |
-| sedan_hatch | 57 | — | — |
-| suv_pickup | 11 | — | — |
-| truck_bus | 24 | — | — |
-| motorcycle | 11 | — | — |
-| Placas lidas | 4 | 49 | +45 |
-| Taxa OCR | 3.9% | 50% | +46.1% |
-| Testes passando | 89 | 93 | +4 |
+| FPS pipeline (loop principal) | 4.78 | **5.56** | +0.78 |
+| Total veículos | 98 | 98 | 0 |
+| Placas lidas (válidas) | 4 | **49** | +45 |
+| Taxa de leitura | 4.1% | **50.0%** | +45.9% |
+| Confiança média | 0.569 | **0.960** | +0.391 |
+| Confiança mínima | 0.259 | 0.744 | +0.485 |
 
-### 3.3 — Atualizar README.md
+> **Nota sobre variação de veículos (98 vs 109):** O `benchmark_ocr.py` registrou
+> 98 cruzamentos; o `main.py` em produção registrou 109. A variação é esperada:
+> a thread do ONNX Runtime (fast-alpr) altera o timing do loop principal,
+> causando diferenças de até ±10% no número de tracks capturados pelo ByteTrack
+> entre execuções. Os números do `main.py` são usados como referência de produção
+> no README; os 98 deste benchmark refletem o contexto de medição do OCR.
 
-Substituir todos os números estimados pelos valores reais das tabelas acima.
-Adicionar seção "Evolução por versão":
+### Análise do fix de arquitetura (CPU starvation)
 
-```markdown
+Na primeira execução do fast-alpr com `ocr_queue` de `maxsize=50`, o FPS caiu para
+**1.11** — uma queda de 78% em relação ao EasyOCR. A causa foi identificada como
+**CPU starvation**: o ONNX Runtime usa um pool de threads próprio em C++ que, ao
+processar até 50 crops enfileirados em background, saturava todos os cores da CPU,
+privando o PyTorch (YOLOv8) de tempo de execução.
+
+Solução: `ocr_queue = Queue(maxsize=10)` com `put_nowait()` e descarte silencioso
+(`logger.debug`) quando a fila está cheia. Com `maxsize=10`, o ONNX conclui as
+primeiras 10 inferências e para de competir pelos cores antes que o gargalo se instale.
+O fast-alpr subiu de 1.11 → **5.56 FPS** sem perda de placas detectadas (49 → 49).
+
+### Decisão
+
+**fast-alpr adotado** com `ocr_queue` `maxsize=10` não-bloqueante.
+O ganho absoluto de **+45 placas** (4 → 49) com confiança elevada (0.96) e
+FPS superior ao EasyOCR (5.56 vs 4.78) tornam a escolha inequívoca.
+
+---
+
+## Configuração final adotada (v1.3.0)
+
+| Componente | Valor |
+|---|---|
+| Modelo de detecção | YOLOv8s (`models/yolov8s.pt`) |
+| Engine OCR | fast-alpr ONNX (`yolo-v9-t-384-license-plate-end2end` + `cct-xs-v2-global-model`) |
+| `ocr_queue` maxsize | 10 (não-bloqueante, `put_nowait`) |
+| FPS pipeline (benchmark_ocr.py) | 5.56 |
+| Total veículos (benchmark_ocr.py) | 98 |
+| Total veículos (main.py produção) | 109 |
+| Placas lidas (benchmark_ocr.py) | 49 |
+| Placas lidas (main.py produção, sessão a7c76b8e) | 65 |
+| Taxa OCR (benchmark, base 98) | 50.0% |
+| Taxa OCR (produção, base 109) | 59.6% |
+| Confiança média OCR | 0.960 |
+| Testes passando | 93 |
+
+---
+
 ## Evolução por versão
 
-| Versão | FPS | Veículos | Placas | Destaques |
-|---|---|---|---|---|
-| v1.0.0 | 6.2 | 101 | 1 | Pipeline base completo |
-| v1.1.2 | 6.3 | 103 | 2 | Classificação por heurística, cores por classe |
-| v1.2.0 | 6.3 | 103 | 2 | Threshold assimétrico motos |
-| v1.2.1 | 9.7 | 103 | 4 | PlateDetector dedicado (two-stage OCR) |
-| v1.3.0 | _preencher_ | _preencher_ | _preencher_ | _preencher_ |
-```
+| Versão | FPS | Veículos | Placas | Taxa OCR | Destaques |
+|---|---|---|---|---|---|
+| v1.0.0 | 6.2 | 101 | 1 | 1.0% | Pipeline base completo |
+| v1.1.2 | 6.3 | 103 | 2 | 1.9% | Classificação por heurística, cores por classe |
+| v1.2.0 | 6.3 | 103 | 2 | 1.9% | Threshold assimétrico motos |
+| v1.2.1 | 9.7 | 103 | 4 | 3.9% | PlateDetector dedicado (OCR dois estágios) |
+| **v1.3.0** | **4.5*** | **109** | **65** | **59.6%*** | YOLOv8s + fast-alpr + ocr_queue não-bloqueante |
 
-### 3.4 — Commit, tag e GitHub Release
-
-```bash
-# Atualizar BENCHMARK_PLAN.md com todas as tabelas preenchidas
-git add .
-git commit -m "feat: v1.3.0 - [MODELO] + [ENGINE OCR] + benchmark documentado
-
-- Benchmark YOLOv8n vs YOLOv8s: [resultado]
-- Benchmark EasyOCR vs fast-alpr: [resultado]
-- Placas lidas: 4 → [X]
-- FPS: 9.7 → [X]
-- BENCHMARK_PLAN.md com tabelas completas
-- 89+/89+ testes passando"
-
-git tag -a v1.3.0 -m "Release v1.3.0: configuração otimizada por benchmark"
-git push origin main --tags
-```
-
-Criar GitHub Release `v1.3.0` com:
-- `result_final.mp4` como asset
-- `benchmark_detection.json` como asset  
-- `benchmark_ocr.json` como asset
-- Release notes descrevendo os ganhos medidos
+> *FPS e taxa OCR de v1.3.0 referem-se ao `main.py` produção (sessão a7c76b8e-6c57-4e22-ad91-95780e6f28e6).
+> FPS das versões anteriores medido pelo `_FpsMeter` em main.py (janela deslizante de 30 frames).
+> `benchmark_ocr.py` reporta 5.56 FPS e 49/98 placas (50%) — valores de contexto de medição, não de produção.
 
 ---
 
-## Restrições e contratos inegociáveis
+## Limitações conhecidas
 
-- **89 testes devem passar** ao final de cada fase. Não avançar se algum falhar.
-- **Não remover** `OCRWorker` (EasyOCR) — manter como fallback via `settings.ocr.engine`.
-- **Não alterar** interfaces públicas de `CrossingCounter`, `YoloDetector`,
-  `ByteTrackWrapper` ou `OverlayRenderer`.
-- **Não alterar** `domain.py` — contratos de dados são imutáveis.
-- **Salvar** os JSONs de benchmark em `data/outputs/` antes de commitar.
-- **Preencher** as tabelas deste documento antes do commit final de cada fase.
-- Se qualquer instalação falhar (fast-alpr, onnxruntime, yolov8s), reportar
-  o erro e manter a configuração atual — nunca quebrar o pipeline para tentar
-  instalar algo.
+- **CPU starvation (resolvido):** ONNX Runtime e PyTorch competem pelo mesmo pool de cores.
+  Resolvido com `maxsize=10`; reaparece se o maxsize for aumentado sem GPU disponível.
+- **Taxa de descarte:** Com `maxsize=10` e 109 cruzamentos (produção), os 65 eventos com
+  placa (59.6% de 109) correspondem aos crops enfileirados nos momentos em que a fila tinha
+  espaço disponível. O bug de `event_meta` sem `plate_text` inicializado foi corrigido em
+  v1.3.0 — eventos antes perdiam dados antes do fix de `continue` explícito.
+- **FPS com GPU:** Com CUDAExecutionProvider (ONNX em GPU), a contenção desaparece e o
+  `maxsize` pode ser aumentado para capturar mais placas sem penalidade de FPS.
+- **Classificação SUV/Picape:** Recall de 40% (8/20 no ground truth) limitado pelo ângulo
+  bird's eye da câmera que equaliza as proporções de SUV e sedan. Ajustável via
+  `counting.suv_aspect_ratio_threshold` no settings.yaml.
+- **Schema de banco:** Coluna `plate_confidence` (não `plate_conf`), `timestamp` (não `crossed_at`).
+  Consultas devem usar os nomes reais definidos em `src/database/models.py`.

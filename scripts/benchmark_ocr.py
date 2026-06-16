@@ -122,7 +122,7 @@ def run_single_ocr_benchmark(
 
     # Filas isoladas por execução
     frame_queue: queue.Queue = queue.Queue(maxsize=3)
-    ocr_queue: queue.Queue = queue.Queue(maxsize=50)
+    ocr_queue: queue.Queue = queue.Queue(maxsize=10)
     db_queue: queue.Queue = queue.Queue(maxsize=500)  # maior para coleta de eventos
     stop_event = threading.Event()
 

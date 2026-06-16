@@ -3,7 +3,7 @@
 **Projeto:** Vehicle Counter — Pipeline de Visão Computacional para contagem e classificação
 de veículos em rodovias com OCR de placas e persistência em banco de dados.
 
-**Versão da arquitetura:** 1.0
+**Versão da arquitetura:** 1.3
 **Decisões validadas em:** Revisão conjunta Claude Sonnet + Gemini (ver seção § Decisões e Justificativas)
 
 ---
@@ -30,7 +30,8 @@ de veículos em rodovias com OCR de placas e persistência em banco de dados.
 | Detecção + Classificação | YOLOv8s (Ultralytics) | 8.0 | Melhor balanço mAP/FPS; COCO inclui car, truck, bus; ecossistema maduro |
 | Fallback leve (CPU) | YOLOv8n | 8.0 | Flag `model: yolov8n.pt` no settings.yaml |
 | Tracking | ByteTrack (via Ultralytics) | — | IoU-based, sem ReID neural, mantém FPS alto; `track_buffer` configurável |
-| OCR | PaddleOCR | 2.7+ | Mais rápido e preciso que EasyOCR/Tesseract para crops pequenos de placas |
+| OCR (primary) | fast-alpr (ONNX) | 0.2+ | Pipeline end-to-end especializado em placas; detector + OCR em um único modelo ONNX |
+| OCR (fallback) | EasyOCR | 1.7+ | Selecionável via `ocr.engine: "easyocr"` no settings.yaml |
 | Validação de placa | Regex Python | — | Mercosul `[A-Z]{3}[0-9][A-Z][0-9]{2}` + padrão antigo `[A-Z]{3}[0-9]{4}` |
 | ORM / Banco | SQLAlchemy + SQLite | 2.0 / 3.x | SQLite por padrão; flag `DB_BACKEND=postgresql` sem mudança de código |
 | Vídeo I/O | OpenCV Headless | 4.8+ | `opencv-python-headless` — sem dependências de display para Docker |
@@ -47,8 +48,8 @@ trocando apenas `model.weights` no `settings.yaml` quando o ecossistema estabili
 ### Por que ByteTrack e não DeepSORT
 
 DeepSORT exige uma rede neural de Re-Identificação (ReID) rodando por frame para extrair
-embeddings de aparência — custo adicional de ~5–15ms por frame na GPU. ByteTrack usa apenas
-IoU geométrico em dois rounds (detecções de alta e baixa confiança), sendo ~3× mais leve.
+embeddings de aparência — custo adicional por frame na GPU. ByteTrack usa apenas
+IoU geométrico em dois rounds (detecções de alta e baixa confiança), sendo mais leve.
 Para câmera fixa de rodovia sem oclusão severa, ByteTrack é suficiente. BoT-SORT fica como
 pivot documentado se a oclusão do vídeo de entrada exigir ReID.
 
@@ -84,7 +85,9 @@ vehicle-counter/
 │   │   └── crossing_logic.py  # CrossingCounter: produto vetorial + votação majoritária
 │   │
 │   ├── ocr/
-│   │   └── plate_ocr.py       # Thread Pool: crop bbox máxima → PaddleOCR → regex
+│   │   ├── plate_ocr.py           # OCRWorker (EasyOCR) + PlateOCR + _validate_plate
+│   │   ├── plate_detector.py      # PlateDetector: localiza placa em crop de veículo (YOLOv8)
+│   │   └── fast_alpr_worker.py    # FastAlprWorker: OCR end-to-end via fast-alpr ONNX
 │   │
 │   ├── database/
 │   │   ├── models.py          # SQLAlchemy ORM: VehicleEvent table
@@ -95,7 +98,7 @@ vehicle-counter/
 │   │
 │   └── main.py                # Ponto de entrada: monta e inicia o pipeline completo
 │
-├── models/                    # Pesos .pt (gitignored — baixar via script)
+├── models/                    # Pesos .pt e .onnx (gitignored — baixar via scripts)
 │   └── .gitkeep
 │
 ├── data/
@@ -106,13 +109,17 @@ vehicle-counter/
 │   ├── unit/
 │   │   ├── test_crossing_logic.py
 │   │   ├── test_yolo_detector.py
-│   │   └── test_plate_ocr.py
+│   │   ├── test_plate_ocr.py
+│   │   ├── test_plate_detector.py
+│   │   └── test_fast_alpr_worker.py
 │   └── integration/
 │       └── test_pipeline.py
 │
 ├── scripts/
-│   ├── download_models.py     # Baixa yolov8s.pt com verificação de hash
-│   └── benchmark.py           # Mede FPS com/sem OCR, com/sem GPU
+│   ├── download_models.py       # Baixa yolov8n.pt e yolov8s.pt via Ultralytics
+│   ├── download_plate_model.py  # Baixa license_plate_detector.pt via HuggingFace Hub
+│   ├── benchmark_detection.py   # Benchmark YOLOv8n vs YOLOv8s (FPS, crossings)
+│   └── benchmark_ocr.py         # Benchmark EasyOCR vs fast-alpr (placas, FPS)
 │
 ├── docker/
 │   ├── Dockerfile
@@ -143,7 +150,7 @@ vehicle-counter/
 │  1. frame = frame_queue.get()                                   │
 │  2. detections = YoloDetector.detect(frame)                     │
 │  3. tracks = ByteTrackWrapper.update(detections)                │
-│  4. crossed_ids = CrossingCounter.update(tracks)                │
+│  4. crossed_ids = CrossingCounter.update(tracks, frame)         │
 │     ├─ Se crossed: ocr_queue.put(crop, track_id)  (não bloqueia)│
 │     └─ db_queue.put(VehicleEvent)                 (não bloqueia)│
 │  5. annotated = OverlayRenderer.draw(frame, tracks, counter)    │
@@ -151,16 +158,16 @@ vehicle-counter/
 └──────────────┬──────────────────────────┬───────────────────────┘
                │                          │
                ▼                          ▼
-┌──────────────────────┐   ┌──────────────────────────────────────┐
-│  ThreadPoolExecutor  │   │  Thread: DB Writer (Consumer)        │
-│  OCR Worker          │   │                                      │
-│                      │   │  db_queue → batch de 10 eventos      │
-│  crop → CLAHE        │   │  → session.bulk_save_objects()       │
-│  → binarização       │   │  → session.commit()                  │
-│  → PaddleOCR         │   │                                      │
-│  → regex validation  │   │  Flush forçado a cada 5s             │
-│  → db_queue.put()    │   │  (garante persistência sem acúmulo)  │
-└──────────────────────┘   └──────────────────────────────────────┘
+┌──────────────────────────────────┐   ┌──────────────────────────────────────┐
+│  Thread: OCR Worker              │   │  Thread: DB Writer (Consumer)        │
+│  FastAlprWorker (padrão)         │   │                                      │
+│  ou OCRWorker (engine=easyocr)   │   │  db_queue → batch de 10 eventos      │
+│                                  │   │  → session.bulk_save_objects()       │
+│  fast-alpr: ONNX end-to-end      │   │  → session.commit()                  │
+│  EasyOCR: CLAHE + binarização    │   │                                      │
+│  → regex validation              │   │  Flush forçado a cada 5s             │
+│  → db_queue.put_nowait()         │   │  (garante persistência sem acúmulo)  │
+└──────────────────────────────────┘   └──────────────────────────────────────┘
 ```
 
 ### Controle de filas
@@ -168,8 +175,8 @@ vehicle-counter/
 | Fila | `maxsize` | Comportamento quando cheia |
 |---|---|---|
 | `frame_queue` | 3 | Producer descarta frame mais antigo (frame drop intencional) |
-| `ocr_queue` | 50 | `put_nowait()` — descarta se cheia, loga `WARNING` |
-| `db_queue` | 200 | `put_nowait()` — loga `ERROR` se cheia (evento perdido é crítico) |
+| `ocr_queue` | **10** | `put_nowait()` — descarta crop, loga `DEBUG`; evita CPU starvation do ONNX |
+| `db_queue` | 200 | `put_nowait()` — loga `WARNING` se cheia (evento perdido é crítico) |
 
 ### Pré-processamento de frame
 
@@ -237,40 +244,33 @@ antes de retornar os `Track` objects.
 
 Ver seção completa § 5.
 
-### 4.5 `src/ocr/plate_ocr.py`
+### 4.5 `src/ocr/` — Módulos de OCR
 
-**Responsabilidade:** Extrair e validar texto de placa a partir de crop de veículo.
+O engine OCR é selecionável via `settings.ocr.engine` (`"fast_alpr"` | `"easyocr"`).
 
-```python
-class PlateOCR:
-    def __init__(self, settings: OCRSettings): ...
-    def process(self, crop: np.ndarray, track_id: int) -> str | None: ...
+**`fast_alpr_worker.py` — FastAlprWorker (engine padrão, v1.3.0)**
 
-    def _preprocess(self, crop: np.ndarray) -> np.ndarray:
-        # 1. Upscale para mínimo 100px de altura
-        # 2. CLAHE para equalização de histograma adaptativa
-        # 3. Binarização adaptativa (Otsu)
-        ...
+Thread consumidora que usa `fast-alpr` (ONNX end-to-end). Processa um crop de veículo
+por vez: detector YOLO localiza a placa dentro do crop → OCR `cct-xs-v2-global-model`
+lê o texto → `_validate_plate()` aplica regex Mercosul/Antigo.
 
-    def _validate_plate(self, text: str) -> str | None:
-        # Mercosul: ABC1D23
-        # Padrão antigo: ABC1234
-        ...
-```
+**`plate_ocr.py` — OCRWorker + PlateOCR (engine alternativo)**
 
-**Estratégia de trigger (best-crop buffer):**
+Thread consumidora usando EasyOCR. O `PlateDetector` (estágio 1) localiza a placa no
+crop via YOLOv8 (`models/license_plate_detector.pt`); o `PlateOCR` (estágio 2) aplica
+CLAHE + binarização + EasyOCR. Fallback para crop completo se o detector não encontrar placa.
 
-O OCR dispara uma única vez por `track_id`, mas usando o melhor frame já capturado — não
-o frame do cruzamento. A linha virtual geralmente não coincide com o ponto de máxima
-proximidade do veículo com a câmera, então o crop daquele instante pode ter qualidade inferior.
+**`plate_detector.py` — PlateDetector**
 
-Implementação no `CrossingCounter` (não no OCR):
-- `_best_crop: dict[int, np.ndarray]` — crop de maior qualidade visto até agora por track_id
-- `_max_bbox_area: dict[int, float]` — área máxima de bbox registrada por track_id
-- A cada frame: se `bbox_area > _max_bbox_area[track_id]`, atualizar `_best_crop` e `_max_bbox_area`
-- No evento de cruzamento: `ocr_queue.put_nowait((track_id, _best_crop[track_id]))`
+Wrapper YOLOv8 para localização de placa dentro de crop de veículo. Se a altura do crop
+for menor que 64px, aplica upscale cúbico antes da inferência e remapeia as coordenadas.
+Retorna sub-crop com margem de 4px ou `None` se nenhuma placa for detectada.
 
-Isso garante o crop de maior resolução angular sem enfileirar múltiplas cópias do mesmo veículo.
+**Estratégia de best-crop (CrossingCounter → OCR):**
+
+O OCR dispara uma única vez por `track_id` usando o crop de maior área de bbox histórico.
+Implementado no `CrossingCounter` via `_best_crop[track_id]` e `_max_bbox_area[track_id]`.
+No evento de cruzamento: `ocr_queue.put_nowait((track_id, best_crop, event_meta))`.
 
 ### 4.6 `src/database/models.py`
 
@@ -313,7 +313,9 @@ def _side(ax, ay, bx, by, px, py) -> float:
 def _crossed(line_a, line_b, p_prev, p_curr) -> bool:
     d1 = _side(*line_a, *line_b, *p_prev)
     d2 = _side(*line_a, *line_b, *p_curr)
-    return (d1 > 0) != (d2 > 0)   # sinais opostos = cruzou a linha
+    # Cobre o caso em que o centróide cai exatamente sobre a linha (d==0).
+    # (d1 > 0) != (d2 > 0) perde esse caso por causa de -0.0 em IEEE 754.
+    return d1 * d2 < 0 or (d1 == 0) != (d2 == 0)
 ```
 
 ### Filtro de jitter e direção
@@ -342,8 +344,9 @@ class CrossingCounter:
     def __init__(self, line_points: list, direction: str,
                  min_displacement_px: int, class_vote_window: int): ...
 
-    def update(self, tracks: list[Track]) -> list[int]:
-        """Retorna lista de track_ids que cruzaram neste frame."""
+    def update(self, tracks: list[Track], frame: np.ndarray) -> list[int]:
+        """Retorna lista de track_ids que cruzaram neste frame.
+        O parâmetro frame é necessário para capturar _best_crop[track_id]."""
         ...
 
     def get_vehicle_class(self, track_id: int) -> str:
@@ -360,7 +363,8 @@ class CrossingCounter:
 - `_crossed_ids: set[int]` — garante idempotência (um ID nunca é contado duas vezes)
 - `_previous_centroids: dict[int, tuple]` — centróide do frame anterior por track_id
 - `_class_votes: dict[int, Counter]` — Counter de votos de classe por track_id
-- `_bbox_areas: dict[int, float]` — área máxima de bbox vista por track_id (para trigger OCR)
+- `_best_crop: dict[int, np.ndarray]` — melhor crop (maior bbox) capturado por track_id
+- `_max_bbox_area: dict[int, float]` — área máxima de bbox vista por track_id (substitui ao crescer)
 
 ### Mapeamento de classe COCO → categoria de negócio
 
@@ -372,8 +376,13 @@ COCO_TO_VEHICLE_CLASS = {
     7: "truck",
 }
 
-def _refine_class(class_id: int, bbox_area: float, frame_area: float) -> str:
-    """Heurística de área relativa para diferenciar SUV/Picape de Sedan/Hatch."""
+def _refine_class(class_id: int, bbox_area: float, frame_area: float, aspect_ratio: float) -> str:
+    """Heurística de área/aspecto para diferenciar SUV/Picape de Sedan/Hatch.
+
+    Thresholds configuráveis via settings.yaml:
+      counting.suv_aspect_ratio_threshold (padrão 0.85)
+      counting.truck_area_threshold (padrão 0.02)
+    """
     base = COCO_TO_VEHICLE_CLASS.get(class_id, "unknown")
     if base == "car":
         ratio = bbox_area / frame_area
@@ -387,18 +396,18 @@ def _refine_class(class_id: int, bbox_area: float, frame_area: float) -> str:
 
 ```sql
 CREATE TABLE vehicle_events (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    track_id      INTEGER NOT NULL,
-    vehicle_class VARCHAR(20) NOT NULL,
-    plate_text    VARCHAR(8),
-    plate_conf    REAL,
-    frame_number  INTEGER NOT NULL,
-    crossed_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    session_id    VARCHAR(36) NOT NULL   -- UUID gerado no início de cada execução
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id          INTEGER NOT NULL,
+    vehicle_class     VARCHAR(50) NOT NULL,
+    plate_text        VARCHAR(20),
+    plate_confidence  REAL,            -- NÃO plate_conf
+    frame_number      INTEGER NOT NULL,
+    timestamp         DATETIME NOT NULL,  -- NÃO crossed_at
+    session_id        VARCHAR(36) NOT NULL
 );
 
-CREATE INDEX idx_session ON vehicle_events(session_id);
-CREATE INDEX idx_crossed_at ON vehicle_events(crossed_at);
+CREATE INDEX idx_track_id  ON vehicle_events(track_id);
+CREATE INDEX idx_session   ON vehicle_events(session_id);
 ```
 
 `session_id` é gerado com `uuid.uuid4()` no início de `main.py` e passado para o `DbWriter`,
@@ -410,14 +419,14 @@ permitindo distinguir múltiplas execuções no mesmo banco SQLite sem apagar da
 class VehicleEvent(Base):
     __tablename__ = "vehicle_events"
 
-    id            = Column(Integer, primary_key=True)
-    track_id      = Column(Integer, nullable=False)
-    vehicle_class = Column(String(20), nullable=False)
-    plate_text    = Column(String(8), nullable=True)
-    plate_conf    = Column(Float, nullable=True)
-    frame_number  = Column(Integer, nullable=False)
-    crossed_at    = Column(DateTime, default=datetime.utcnow)
-    session_id    = Column(String(36), nullable=False)
+    id                = Column(Integer, primary_key=True)
+    track_id          = Column(Integer, nullable=False)
+    vehicle_class     = Column(String(50), nullable=False)
+    plate_text        = Column(String(20), nullable=True)
+    plate_confidence  = Column(Float, nullable=True)   # NÃO plate_conf
+    frame_number      = Column(Integer, nullable=False)
+    timestamp         = Column(DateTime, nullable=False)  # NÃO crossed_at
+    session_id        = Column(String(36), nullable=False)
 ```
 
 ### Configuração obrigatória da engine SQLite
@@ -452,12 +461,14 @@ o `DbWriter` está inserindo, eliminando o erro `database is locked` sob carga.
 ### Imagem base
 
 ```dockerfile
-FROM ultralytics/ultralytics:latest
+FROM python:3.11-slim
 ```
 
-**Justificativa:** A imagem oficial da Ultralytics já inclui CUDA, cuDNN, PyTorch e
-a biblioteca Ultralytics em versões mutuamente compatíveis. Partir de `nvidia/cuda` puro
-exigiria resolver manualmente a compatibilidade de versões — risco alto de horas perdidas.
+**Justificativa:** Imagem base mínima com Python 3.11. As dependências (PyTorch, Ultralytics,
+fast-alpr, etc.) são instaladas via `pip install -r requirements.txt` no build. Mais
+controlável e portável que `ultralytics/ultralytics:latest`, que pode mudar sem aviso e
+inclui dependências desnecessárias para CPU. Para GPU, adicionar `--extra-index-url` do
+PyTorch com CUDA.
 
 ### CPU-only (para máquinas sem GPU)
 
@@ -472,7 +483,7 @@ Selecionado via `docker-compose --profile cpu up`.
 
 ```dockerfile
 # opencv-python-headless: sem dependências X11 — obrigatório em servidores sem display
-RUN pip install opencv-python-headless paddleocr ...
+RUN pip install opencv-python-headless fast-alpr onnxruntime ...
 
 # Modelos baixados no entrypoint, não na imagem (imagem menor, modelo atualizável)
 COPY docker/entrypoint.sh /entrypoint.sh
@@ -509,7 +520,7 @@ services:
 | Produto vetorial para crossing | Threshold em Y | Suporta linhas diagonais; robusto a câmeras oblíquas |
 | Votação majoritária de classe | Classificação frame a frame | Elimina instabilidade; custo O(1) por frame |
 | OCR no frame de bbox máxima | OCR em fila contínua | Melhor qualidade de crop; elimina processamento redundante |
-| `ultralytics/ultralytics` como base Docker | `nvidia/cuda` puro | CUDA/cuDNN/PyTorch pré-certificados; evita incompatibilidades |
+| `python:3.11-slim` como base Docker | `ultralytics/ultralytics` | Imagem mínima e controlável; dependências explícitas em requirements.txt |
 | SQLAlchemy como ORM | Queries SQL diretas | Abstração SQLite↔PostgreSQL via flag; sem mudança de código |
 | Separação por domínio em `src/` | Estrutura flat (`core/`, `utils/`) | Cada módulo substituível e testável isoladamente |
 | SQLAlchemy engine com `check_same_thread=False` + WAL | Engine padrão do SQLite | SQLite bloqueia acesso cross-thread por padrão; WAL elimina `database is locked` sob carga |
@@ -517,6 +528,10 @@ services:
 | `warmup(frame_shape)` com shape real + pré-processamento | `warmup()` com `np.zeros((640,640,3))` | Shape diferente no warmup causa realocação de memória GPU no primeiro frame real |
 | `frame_queue` maxsize=3 com frame drop | Buffer ilimitado | Controla latência; pipeline nunca acumula atraso |
 | Dataclasses canônicas em `domain.py` | Dicts passados entre módulos | Contratos explícitos; type checking; sem acoplamento implícito |
+| YOLOv8s como modelo de detecção | YOLOv8n | +14% cruzamentos (86→98); recall SUV/Picape melhor; benchmark medido em v1.3.0 |
+| fast-alpr (ONNX) como engine OCR | EasyOCR | 49 vs 4 placas (50% vs 4.1%); conf 0.96 vs 0.57; FPS superior após fix (5.56 vs 4.78) |
+| `ocr_queue` maxsize=10 | maxsize=50 | ONNX Runtime saturava cores CPU em background; maxsize=10 limita CPU starvation (1.11→5.56 FPS) |
+| `put_nowait()` + `logger.debug` na ocr_queue | `put()` bloqueante | Loop principal nunca espera por OCR; descarte silencioso evita spam de WARNING |
 
 ---
 
@@ -533,15 +548,16 @@ associação e reatribui novo `track_id`.
   com o novo ID (o que é improvável se a linha estiver posicionada no meio da pista)
 - Se oclusão for crítica no vídeo de entrada, ativar BoT-SORT como pivot: `tracker: "botsort.yaml"`
 
-### Risco 2 — Queda de FPS com OCR
+### Risco 2 — CPU starvation com OCR ONNX
 
-**Causa:** PaddleOCR leva 80–200ms em CPU por inferência.
+**Causa:** O ONNX Runtime usa pool de threads próprio em C++ que, com filas grandes,
+satura todos os cores da CPU, privando o PyTorch (YOLOv8) de tempo de execução.
+Observado com fast-alpr e `ocr_queue` de `maxsize=50`: FPS caiu de 5.56 → 1.11.
 
 **Mitigação:**
-- OCR em `ThreadPoolExecutor` — nunca bloqueia o loop principal
+- `ocr_queue` com `maxsize=10` e `put_nowait()` — descarte silencioso (`logger.debug`)
 - Disparo único por `track_id` no frame de bbox máxima
-- `ocr_queue` com `put_nowait()` descarta silenciosamente em burst
-- Em caso de GPU, PaddleOCR usa CUDA automaticamente
+- Em GPU, ONNX usa `CUDAExecutionProvider` automaticamente — starvation não ocorre
 
 ### Risco 3 — Classificação incorreta SUV vs Sedan
 
