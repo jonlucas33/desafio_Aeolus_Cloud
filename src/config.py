@@ -57,12 +57,17 @@ class OCRSettings(BaseModel):
     """Configurações do módulo de OCR de placas."""
 
     enabled: bool
+    engine: Literal["easyocr", "fast_alpr"] = Field(default="easyocr")
     min_bbox_area_ratio: float = Field(gt=0.0, lt=1.0)
     confidence_threshold: float = Field(default=0.20, gt=0.0, lt=1.0)
     languages: list[str]
+    # EasyOCR + PlateDetector (dois estágios)
     plate_detector_enabled: bool = Field(default=True)
     plate_detector_weights: str = Field(default="models/license_plate_detector.pt")
     plate_detector_conf: float = Field(default=0.5, gt=0.0, lt=1.0)
+    # fast-alpr (ONNX end-to-end)
+    alpr_detector_model: str = Field(default="yolo-v9-t-384-license-plate-end2end")
+    alpr_ocr_model: str = Field(default="cct-xs-v2-global-model")
 
 
 class DatabaseSettings(BaseModel):

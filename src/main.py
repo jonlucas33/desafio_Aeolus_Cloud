@@ -167,7 +167,7 @@ def main() -> None:
 
     # ── Filas ─────────────────────────────────────────────────────────────
     frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
-    ocr_queue: queue.Queue = queue.Queue(maxsize=50)
+    ocr_queue: queue.Queue = queue.Queue(maxsize=10)
     db_queue: queue.Queue = queue.Queue(maxsize=200)
 
     # ── Módulos do pipeline (todos no escopo de main) ─────────────────────
@@ -203,42 +203,57 @@ def main() -> None:
     # ── OCR (opcional) ────────────────────────────────────────────────────
     ocr_worker: OCRWorker | None = None
     if settings.ocr.enabled:
-        use_gpu = settings.model.device == "cuda"
-        plate_ocr = PlateOCR(
-            languages=settings.ocr.languages,
-            gpu=use_gpu,
-            confidence_threshold=settings.ocr.confidence_threshold,
-        )
+        if settings.ocr.engine == "fast_alpr":
+            # Engine ONNX end-to-end — localiza e lê placa em um único passo
+            from src.ocr.fast_alpr_worker import FastAlprWorker
+            ocr_worker = FastAlprWorker(
+                ocr_queue=ocr_queue,
+                db_queue=db_queue,
+                stop_event=stop_event,
+                settings=settings.ocr,
+            )
+            logger.info("Engine OCR: fast-alpr (ONNX)")
+        else:
+            # Engine padrão: EasyOCR + PlateDetector (dois estágios)
+            use_gpu = settings.model.device == "cuda"
+            plate_ocr = PlateOCR(
+                languages=settings.ocr.languages,
+                gpu=use_gpu,
+                confidence_threshold=settings.ocr.confidence_threshold,
+            )
 
-        # Estágio 1: detector de placa (dois estágios)
-        plate_detector = None
-        if settings.ocr.plate_detector_enabled:
-            pd_weights = Path(settings.ocr.plate_detector_weights)
-            if pd_weights.exists():
-                from src.ocr.plate_detector import PlateDetector
-                plate_detector = PlateDetector(
-                    weights_path=str(pd_weights),
-                    conf_threshold=settings.ocr.plate_detector_conf,
-                )
-            else:
-                logger.warning(
-                    "PlateDetector habilitado mas modelo não encontrado: %s — "
-                    "OCR de dois estágios desabilitado; execute "
-                    "python scripts/download_plate_model.py para baixar o modelo",
-                    pd_weights,
-                )
+            # Estágio 1: detector de placa dedicado
+            plate_detector = None
+            if settings.ocr.plate_detector_enabled:
+                pd_weights = Path(settings.ocr.plate_detector_weights)
+                if pd_weights.exists():
+                    from src.ocr.plate_detector import PlateDetector
+                    plate_detector = PlateDetector(
+                        weights_path=str(pd_weights),
+                        conf_threshold=settings.ocr.plate_detector_conf,
+                    )
+                else:
+                    logger.warning(
+                        "PlateDetector habilitado mas modelo não encontrado: %s — "
+                        "OCR de dois estágios desabilitado; execute "
+                        "python scripts/download_plate_model.py para baixar o modelo",
+                        pd_weights,
+                    )
 
-        ocr_worker = OCRWorker(
-            ocr_queue=ocr_queue,
-            db_queue=db_queue,
-            plate_ocr=plate_ocr,
-            plate_detector=plate_detector,
-        )
+            ocr_worker = OCRWorker(
+                ocr_queue=ocr_queue,
+                db_queue=db_queue,
+                plate_ocr=plate_ocr,
+                plate_detector=plate_detector,
+            )
+            logger.info("Engine OCR: easyocr (dois estágios)")
+
         ocr_worker.start()
 
     # ── Estado de runtime ─────────────────────────────────────────────────
     writer: cv2.VideoWriter | None = None
     total_frames: int = 0
+    class_counts: dict[str, int] = {}
     session_start: float = time.perf_counter()
     warmed_up: bool = False
 
@@ -275,70 +290,44 @@ def main() -> None:
             crossed_ids = counter.update(tracks, frame)
 
             for tid in crossed_ids:
+                # 1. Classe sempre via votação majoritária — fonte de verdade
                 cls = counter.get_vehicle_class(tid)
-                logger.info(
-                    "Cruzamento: track_id=%d classe=%s total=%d",
-                    tid, cls, counter.count,
-                )
+                class_counts[cls] = class_counts.get(cls, 0) + 1
 
+                # 2. event_meta completo desde o início — vehicle_class não é alterado depois
                 event_meta = {
                     "track_id": tid,
                     "vehicle_class": cls,
                     "frame_number": total_frames,
                     "timestamp": datetime.now(timezone.utc),
                     "session_id": session_id,
+                    "plate_text": None,
+                    "plate_confidence": None,
                 }
 
-                crop = counter.get_best_crop(tid)
-                # Fallback: usa o crop do frame atual quando best_crop ainda não
-                # foi capturado (ex.: primeiro frame do veículo é o cruzamento).
-                if crop is None or crop.size == 0:
-                    track_at_crossing = next(
-                        (t for t in tracks if t.track_id == tid), None
-                    )
-                    if track_at_crossing is not None:
-                        x1_, y1_, x2_, y2_ = track_at_crossing.bbox_xyxy
-                        x1_ = max(0, int(x1_))
-                        y1_ = max(0, int(y1_))
-                        x2_ = min(frame.shape[1], int(x2_))
-                        y2_ = min(frame.shape[0], int(y2_))
-                        if x2_ > x1_ and y2_ > y1_:
-                            crop = frame[y1_:y2_, x1_:x2_]
-
-                frame_area = cap.frame_width * cap.frame_height
-                crop_qualifies = (
-                    crop is not None
-                    and crop.size > 0
-                    and (crop.shape[0] * crop.shape[1])
-                    >= settings.ocr.min_bbox_area_ratio * frame_area
+                # 3. Log usa o mesmo cls — sem divergência
+                logger.info(
+                    "Cruzamento: track_id=%d classe=%s total=%d",
+                    tid, cls, counter.count,
                 )
 
-                if settings.ocr.enabled and ocr_worker is not None and crop_qualifies:
+                # 4. OCR: despacha best_crop para worker — vehicle_class não é tocado pelo worker
+                crop = counter.get_best_crop(tid)
+                if settings.ocr.enabled and ocr_worker is not None and crop is not None:
                     try:
                         ocr_queue.put_nowait((tid, crop, event_meta))
+                        continue  # OCR worker persiste event_meta no db_queue
                     except queue.Full:
-                        logger.warning(
-                            "ocr_queue cheia — crop de track_id=%d descartado; "
-                            "evento salvo sem placa",
-                            tid,
-                        )
-                        event_meta["plate_text"] = None
-                        event_meta["plate_confidence"] = None
-                        try:
-                            db_queue.put_nowait(event_meta)
-                        except queue.Full:
-                            logger.warning(
-                                "db_queue cheia — evento track_id=%d descartado", tid
-                            )
-                else:
-                    event_meta["plate_text"] = None
-                    event_meta["plate_confidence"] = None
-                    try:
-                        db_queue.put_nowait(event_meta)
-                    except queue.Full:
-                        logger.warning(
-                            "db_queue cheia — evento track_id=%d descartado", tid
-                        )
+                        logger.debug("ocr_queue cheia — track_id=%d sem OCR", tid)
+                        # fallthrough: persistir sem placa
+
+                # 5. Sem OCR ou fila cheia: persistir diretamente
+                try:
+                    db_queue.put_nowait(event_meta)
+                except queue.Full:
+                    logger.warning(
+                        "db_queue cheia — evento track_id=%d descartado", tid
+                    )
 
             # ── Renderização + Gravação ───────────────────────────────────
             fps_meter.tick()
@@ -378,7 +367,7 @@ def main() -> None:
             total_frames=total_frames,
             avg_fps=fps_meter.fps,
             total_count=counter.count,
-            class_counts=counter.get_class_counts(),
+            class_counts=class_counts,
             output_path=settings.video.output,
         )
 

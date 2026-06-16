@@ -99,11 +99,27 @@ if __name__ == "__main__":
     import argparse
     from pathlib import Path
 
+    # Modelos padrão do projeto — yolov8n (pipeline principal) e yolov8s (benchmark)
+    _DEFAULT_MODELS = ["yolov8n.pt", "yolov8s.pt"]
+
     parser = argparse.ArgumentParser(description="Download de pesos YOLOv8")
-    parser.add_argument("--model", default="yolov8n.pt", help="Nome do arquivo de peso")
+    parser.add_argument(
+        "--model",
+        nargs="+",
+        default=_DEFAULT_MODELS,
+        help=(
+            "Nome(s) do(s) arquivo(s) de peso. "
+            f"Padrão: {' '.join(_DEFAULT_MODELS)}"
+        ),
+    )
     parser.add_argument("--dest", default="models", help="Diretório de destino")
     args = parser.parse_args()
 
-    dest = download_model(args.model, Path(args.dest))
-    ok = verify_sha256(dest, args.model)
-    sys.exit(0 if ok else 1)
+    exit_code = 0
+    for model_name in args.model:
+        dest = download_model(model_name, Path(args.dest))
+        ok = verify_sha256(dest, model_name)
+        if not ok:
+            exit_code = 1
+
+    sys.exit(exit_code)

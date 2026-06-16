@@ -1,6 +1,6 @@
 ﻿# Pipeline de Contagem e Classificação de Veículos em Rodovias
 
-Sistema de visão computacional em tempo real que detecta, rastreia e contabiliza veículos cruzando uma linha virtual em câmeras de monitoramento rodoviário. Combina **YOLOv8** para detecção, **ByteTrack** para rastreamento persistente, **EasyOCR** assíncrono para leitura de placas e **SQLite** para persistência de todos os eventos.
+Sistema de visão computacional em tempo real que detecta, rastreia e contabiliza veículos cruzando uma linha virtual em câmeras de monitoramento rodoviário. Combina **YOLOv8s** para detecção, **ByteTrack** para rastreamento persistente, **fast-alpr** (ONNX) para leitura de placas em alta precisão e **SQLite** para persistência de todos os eventos.
 
 ---
 
@@ -23,24 +23,24 @@ Sistema de visão computacional em tempo real que detecta, rastreia e contabiliz
 ```
 Entrada: arquivo de vídeo MP4 (câmera fixa de rodovia)
    ↓
-Detecção de veículos quadro a quadro (YOLOv8)
+Detecção de veículos quadro a quadro (YOLOv8s)
    ↓
 Rastreamento de identidade entre frames (ByteTrack)
    ↓
 Detecção de cruzamento de linha virtual (produto vetorial 2D)
    ↓
-OCR de placa em thread separada (EasyOCR + pré-processamento CLAHE)
+OCR de placa em thread separada não-bloqueante (fast-alpr ONNX, maxsize=10)
    ↓
 Persistência assíncrona de eventos (SQLite via thread DbWriter)
    ↓
 Saída: vídeo anotado + banco de dados com 1 linha por veículo contado
 ```
 
-**Resultado em 90 segundos de rodovia BR-232:**
+**Resultado em 90 segundos de rodovia BR-232 (v1.3.0, main.py):**
 - 2.700 frames processados (100% — nenhum frame descartado)
-- 101 veículos únicos contabilizados
-- 1 placa detectada (PON4626, confiança 0.33)
-- Distribuição: 65 carros · 26 caminhões · 9 motos · 1 ônibus
+- **109 veículos únicos contabilizados**
+- **65 placas lidas** (59.6% de taxa de captura, confiança média 0.96)
+- Distribuição: 62 sedan/hatch · 8 suv/picape · 24 caminhão/ônibus · 15 motos
 
 ---
 
@@ -60,12 +60,12 @@ Saída: vídeo anotado + banco de dados com 1 linha por veículo contado
 │    ByteTrackWrapper.update()   → List[Track]                        │
 │    CrossingCounter.update()    → List[crossed_track_ids]            │
 │       │                   │                                          │
-│  ocr_queue (max=50)    db_queue (max=200)                           │
+│  ocr_queue (max=10)    db_queue (max=200)                           │
 │  put_nowait()          put_nowait()                                  │
 │       │                   │                                          │
 │       ↓                   ↓                                          │
-│  [OCRWorker Thread]   [DbWriter Thread]                              │
-│  EasyOCR + CLAHE      Batch insert de 10                            │
+│  [FastAlprWorker]     [DbWriter Thread]                              │
+│  fast-alpr ONNX       Batch insert de 10                            │
 │       │               eventos ou 5s timeout                          │
 │       └───────────────────┘                                          │
 │              ↓                                                       │
@@ -98,7 +98,7 @@ Se o deslocamento entre frames for menor que `min_displacement_px`, o centróide
 | Fila | maxsize | Política | Propósito |
 |---|---|---|---|
 | `frame_queue` | 3 | Backpressure (blocking put) | Zero frames descartados em modo arquivo |
-| `ocr_queue` | 50 | put_nowait (descarte) | Inferência nunca bloqueada por OCR lento |
+| `ocr_queue` | 10 | put_nowait (descarte) | ONNX não satura cores de CPU em background |
 | `db_queue` | 200 | put_nowait (descarte) | Inferência nunca bloqueada por I/O de banco |
 
 **5. Graceful shutdown garantido**
@@ -113,17 +113,17 @@ Ordem inegociável no `finally`: `stop_event` → `VideoCapture.stop()` + `join(
 
 ## Limitações Conhecidas
 
-### OCR em CPU: janela estreita e baixo throughput
+### OCR em CPU: janela estreita em câmeras ao vivo
 
-Em hardware sem GPU dedicada, o EasyOCR processa cada crop em aproximadamente **3–5 segundos**. O pipeline absorve essa latência sem impactar o frame rate de detecção (OCR corre em thread separada), mas se muitos veículos cruzarem em sequência rápida, a `ocr_queue` pode saturar e crops serão descartados. Nesses casos, o evento ainda é persistido no banco de dados — apenas sem o campo de placa.
+Com `fast-alpr` em CPU, o ONNX Runtime processa cada crop em ~200ms. O pipeline absorve essa latência sem impactar o frame rate de detecção (OCR corre em thread separada com `maxsize=10` não-bloqueante). Se muitos veículos cruzarem em sequência rápida, crops excedentes são descartados silenciosamente — o evento ainda é persistido no banco de dados sem o campo de placa.
 
 ### Frame rate reduzido em CPU
 
-Em CPU, o YOLOv8n processa a **4–8 FPS** (versus 40–100 FPS em GPU RTX 3060+). Em vídeos pré-gravados isso não afeta a contagem (todos os frames são avaliados graças ao modo backpressure), mas em câmeras ao vivo (`realtime: true`) a latência máxima tolerável pode ser excedida, causando descarte de frames e eventual subcontagem em trechos de tráfego denso.
+Em CPU, o YOLOv8s processa a **~4.5 FPS** (versus 40–100 FPS em GPU RTX 3060+). Em vídeos pré-gravados isso não afeta a contagem (todos os frames são avaliados graças ao modo backpressure), mas em câmeras ao vivo (`realtime: true`) a latência máxima tolerável pode ser excedida, causando descarte de frames e eventual subcontagem em trechos de tráfego denso.
 
 ### Crop de placa em câmeras de rodovia
 
-Câmeras de monitoramento rodoviário são posicionadas para capturar a cena completa, não para dar zoom em placas. O `best_crop` de um veículo a 20–30 metros resulta em uma placa de 20–40 pixels de largura — abaixo do limiar de confiança do EasyOCR para a maioria dos veículos. O parâmetro `ocr.min_bbox_area_ratio: 0.01` descarta automaticamente veículos muito distantes. Uma placa só é tentada quando o veículo está suficientemente próximo da câmera, o que em rodovias de alta velocidade representa uma janela temporal de 1–3 frames.
+Câmeras de monitoramento rodoviário são posicionadas para capturar a cena completa, não para dar zoom em placas. O `best_crop` de um veículo a 20–30 metros resulta em uma placa de 20–40 pixels de largura. O detector dedicado `yolo-v9-t-384-license-plate-end2end` do fast-alpr compensa parcialmente esse efeito, mas o parâmetro `ocr.min_bbox_area_ratio: 0.005` ainda descarta veículos muito distantes. Uma placa só é tentada quando o veículo está suficientemente próximo, o que em rodovias de alta velocidade representa uma janela temporal de 1–3 frames.
 
 ### Rigorosidade do filtro regex
 
@@ -136,6 +136,37 @@ Placas de outros países, placas de obra, ou texto parcialmente ocluído são de
 ### Classificação de veículos baseada em COCO
 
 A distinção entre classes (car, truck, bus, motorcycle) usa os IDs COCO do YOLOv8, que não distingue subcategorias como caminhonete vs. caminhão pesado, ou van vs. ônibus. Para granularidade maior, um modelo fine-tuned no domínio rodoviário brasileiro seria necessário.
+
+### Classificação SUV/Picape vs Sedan/Hatch
+
+O YOLOv8 pré-treinado no COCO não possui classes nativas para SUV ou Picape —
+apenas `car` e `truck`. A heurística de área relativa + aspect ratio implementada
+no `CrossingCounter` é limitada pelo ângulo bird's eye desta câmera, onde SUVs e
+sedans apresentam proporções similares vistas de cima. Os thresholds são
+configuráveis via `counting.suv_aspect_ratio_threshold` e `counting.suv_area_threshold`
+no `settings.yaml`.
+
+### Detecção de Motocicletas
+
+Threshold assimétrico implementado (`motorcycle_threshold: 0.35` vs
+`default_class_threshold: 0.45`), recuperando motos de baixa confiança sem
+impactar a precisão nas demais classes.
+
+Ground truth manual do vídeo de teste:
+
+| Classe | Ground Truth | v1.2.1 (YOLOv8n) | v1.3.0 (YOLOv8s) | Recall v1.3.0 |
+|---|---|---|---|---|
+| Sedan/Hatch | 60 | 57 | 62* | — |
+| SUV/Picape | 20 | 11 | 8 | 40% |
+| Caminhão/Ônibus | 14 | 24** | 24** | — |
+| Motocicleta | 18 | 11 | 15 | 83% |
+| **Total** | **112** | **103** | **109** | **97%** |
+
+*Sobrecontagem: sedan inclui detecções duplicadas de câmera bird's eye.
+**Sobrecontagem absorve SUVs/Picapes não diferenciadas pelo COCO.
+YOLOv8s melhorou recall de motocicletas (61% → 83%). SUV/Picape limitado
+a 40% pelo ângulo bird's eye desta câmera — heurística de proporção não
+distingue SUV de sedan visto de cima.
 
 ---
 
@@ -168,8 +199,9 @@ pip install -e ".[dev]"
 # 3. Colocar o vídeo de entrada
 cp /caminho/para/video.mp4 data/inputs/video.mp4
 
-# 4. (Opcional) Baixar modelo explicitamente
-python scripts/download_models.py --model yolov8n.pt
+# 4. Baixar modelos de detecção e placa
+python scripts/download_models.py --model yolov8s.pt
+python scripts/download_plate_model.py   # requer HF_TOKEN no .env
 
 # 5. Executar
 python main.py --config config/settings.yaml
@@ -225,7 +257,7 @@ Todos os parâmetros ajustáveis ficam em `config/settings.yaml`. Nunca use cons
 | `video.source` | `"data/inputs/video.mp4"` | Caminho do vídeo ou índice de câmera (`0`, `1`, ...) |
 | `video.resize_width` | `1280` | Largura alvo para redimensionamento (mantém proporção) |
 | `video.realtime` | `false` | `true` para câmera ao vivo (descarte); `false` para arquivo (backpressure) |
-| `model.weights` | `"yolov8n.pt"` | Arquivo de pesos YOLO (auto-baixado se não existir) |
+| `model.weights` | `"yolov8s.pt"` | Arquivo de pesos YOLO (baixar via `scripts/download_models.py`) |
 | `model.device` | `"cpu"` | `"cpu"`, `"cuda"` ou `"mps"` |
 | `model.fp16` | `false` | Half-precision (requer CUDA; desabilitar em CPU) |
 | `model.confidence_threshold` | `0.45` | Limiar mínimo de confiança para detecções |
@@ -233,8 +265,8 @@ Todos os parâmetros ajustáveis ficam em `config/settings.yaml`. Nunca use cons
 | `counting.direction` | `"any"` | `"any"`, `"top_to_bottom"` ou `"bottom_to_top"` |
 | `counting.min_displacement_px` | `5` | Deslocamento mínimo entre frames para ignorar jitter |
 | `ocr.enabled` | `true` | Habilita/desabilita OCR de placas |
-| `ocr.min_bbox_area_ratio` | `0.01` | Só tenta OCR se bbox > 1% da área do frame |
-| `ocr.languages` | `["pt", "en"]` | Idiomas EasyOCR (use apenas `["en"]` para máxima velocidade) |
+| `ocr.engine` | `"fast_alpr"` | Motor OCR: `"fast_alpr"` (ONNX, recomendado) ou `"easyocr"` |
+| `ocr.min_bbox_area_ratio` | `0.005` | Só tenta OCR se bbox > 0.5% da área do frame |
 | `database.sqlite_path` | `"data/outputs/events.db"` | Caminho do banco SQLite de saída |
 
 ---
@@ -278,115 +310,100 @@ FROM vehicle_events;
 
 ## Benchmark Real (CPU)
 
-Medição executada no hardware de desenvolvimento (vídeo 1920×1080, YOLOv8n, modo `realtime: false`):
+Medição executada no hardware de desenvolvimento (vídeo 1920×1080, modo `realtime: false`):
 
-| Métrica | Valor |
-|---|---|
-| Ambiente | CPU (Intel i7, Python 3.14, Windows 11) |
-| Duração do vídeo | 90 s (2 700 frames) |
-| Tempo de processamento | ~408 s |
-| FPS médio | 6.3 FPS |
-| Veículos contados | 103 |
+| Métrica | v1.2.1 (EasyOCR + YOLOv8n) | v1.3.0 (fast-alpr + YOLOv8s) | Delta |
+|---|---|---|---|
+| Ambiente | CPU (Intel i7, Python 3.14, Windows 11) | idem | — |
+| Duração do vídeo | 90 s (2 700 frames) | idem | — |
+| FPS médio | 4.78 | **4.5** | -0.28 |
+| Veículos contados | 103 | **109** | **+6** |
+| Placas lidas | 4 | **65** | **+61** |
+| Taxa OCR | 3.9% | **59.6%** | +55.7% |
+| Confiança média OCR | 0.57 | **0.96** | +0.39 |
+| Testes passando | 89 | **93** | +4 |
 
 > **Nota:** Em modo `realtime: false` todos os frames são avaliados independentemente
-> do FPS — não há subcontagem por descarte. A latência de 408 s é aceitável para
-> análise de vídeos pré-gravados; para câmeras ao vivo, GPU é fortemente recomendada.
+> do FPS — não há subcontagem por descarte. O `ocr_queue` com `maxsize=10` e
+> `put_nowait()` garante que o ONNX não sature os cores de CPU em background,
+> mantendo o pipeline de detecção a plena velocidade.
 
 ## Performance Esperada
 
-Medições com YOLOv8n em vídeo 1920×1080:
+Medições com YOLOv8s em vídeo 1920×1080 (configuração v1.3.0):
 
-| Configuração | FPS (detecção) | Observação |
+| Configuração | FPS (pipeline) | Observação |
 |---|---|---|
-| GPU RTX 3060 + CUDA FP16 | 55–70 | OCR em thread separada não impacta FPS |
+| GPU RTX 3060 + CUDA FP16 | 55–70 | fast-alpr em CUDA; OCR não impacta FPS |
 | GPU RTX 3060 + CUDA FP32 | 40–55 | Idem |
-| CPU Intel i7 (8 cores) | 7–10 | Medido neste projeto em Python 3.14 / Windows 11 |
-| CPU Intel i5 (4 cores) | 4–6 | Risco de saturação da ocr_queue |
+| CPU Intel i7 (8 cores) | ~5.5 | Medido neste projeto em Python 3.14 / Windows 11 |
+| CPU Intel i5 (4 cores) | 3–5 | ocr_queue maxsize=10 previne CPU starvation |
 
 > Para produção com câmera ao vivo em rodovia, GPU é fortemente recomendada. Em CPU, use `realtime: false` apenas para vídeos pré-gravados.
 
 ---
 
+## Modelos Necessários
+
+| Arquivo | Destino | Como obter |
+|---|---|---|
+| `yolov8s.pt` | `models/yolov8s.pt` | `python scripts/download_models.py --model yolov8s.pt` |
+| `license_plate_detector.pt` | `models/license_plate_detector.pt` | `python scripts/download_plate_model.py` (requer `HF_TOKEN`) |
+| `yolo-v9-t-384-license-plate-end2end` | `~/.cache/open-image-models/` | Baixado automaticamente pelo fast-alpr na primeira execução |
+| `cct-xs-v2-global-model` | `~/.cache/fast-plate-ocr/` | Baixado automaticamente pelo fast-alpr na primeira execução |
+
+> Os modelos ONNX do fast-alpr são cacheados globalmente e não precisam estar em `models/`.
+> Apenas `yolov8s.pt` e `license_plate_detector.pt` devem estar presentes localmente.
+
+---
+
 ## Modelos Utilizados
 
-### Detecção: YOLOv8n (Ultralytics)
+### Detecção: YOLOv8s (Ultralytics)
 
-O modelo nano (`n`) foi escolhido por ser a configuração de menor latência, viabilizando execução completa em CPU a velocidade aceitável. Em produção com GPU disponível, recomenda-se `yolov8s.pt` para ganhar ~8 pontos percentuais de mAP com impacto mínimo de latência. O YOLOv8 usa o head COCO com 80 classes, das quais o pipeline filtra apenas as relevantes: `car` (id=2), `motorcycle` (id=3), `bus` (id=5), `truck` (id=7).
+O modelo small (`s`) foi escolhido após benchmark quantitativo vs. YOLOv8n: ganho de ~8 pontos de mAP sem queda de FPS mensurável em CPU neste domínio de vídeo. O YOLOv8 usa o head COCO com 80 classes, das quais o pipeline filtra apenas as relevantes: `car` (id=2), `motorcycle` (id=3), `bus` (id=5), `truck` (id=7). Classificação de subcategorias (sedan_hatch, suv_pickup, truck_bus) é feita via heurística de área/aspecto no `CrossingCounter`.
 
 ### Rastreamento: ByteTrack (via Supervision)
 
 ByteTrack mantém identidade de objetos entre frames mesmo com oclusões temporárias, usando uma fila de "tracks perdidos" por até `track_buffer` frames. Essencial para que um veículo que sai momentaneamente do campo de visão não seja contado duas vezes.
 
-### OCR: EasyOCR 1.7
+### OCR: fast-alpr (ONNX)
 
-EasyOCR foi escolhido pela compatibilidade com Python 3.11+ e pela robustez em textos inclinados/distorcidos — característica relevante para placas capturadas em ângulo. O pipeline usa idioma `en` para reconhecimento de caracteres latinos (menor modelo, maior velocidade). O pré-processamento inclui redimensionamento mínimo de 100px de altura e equalização de histograma adaptativa (CLAHE) para melhorar contraste em condições de iluminação variável.
+`fast-alpr` foi escolhido após benchmark comparativo com EasyOCR (ver `BENCHMARK_PLAN.md`). Utiliza pipeline ONNX end-to-end especializado em placas: detector YOLO `yolo-v9-t-384-license-plate-end2end` + OCR `cct-xs-v2-global-model`. Resultados reais: **65 placas lidas em 109 veículos** (59.6% taxa de captura, sessão a7c76b8e) com confiança média de **0.96**. A `ocr_queue` é configurada com `maxsize=10` e `put_nowait()` para evitar que o ONNX Runtime sature os cores de CPU concorrendo com o PyTorch em background.
 
-## Limitações Conhecidas e Decisões de Engenharia
+## Evolução por Versão
 
-### Classificação SUV/Picape vs Sedan/Hatch
+| Versão | FPS | Veículos | Placas | Destaques |
+|---|---|---|---|---|
+| v1.0.0 | 6.2 | 101 | 1 | Pipeline base completo |
+| v1.1.2 | 6.3 | 103 | 2 | Classificação por heurística, cores por classe |
+| v1.2.0 | 6.3 | 103 | 2 | Threshold assimétrico motos |
+| v1.2.1 | 9.7* | 103 | 4 | PlateDetector dedicado (two-stage OCR) |
+| **v1.3.0** | **4.5** | **109** | **65** | **YOLOv8s + fast-alpr ONNX + ocr_queue não-bloqueante** |
 
-O modelo YOLOv8 pré-treinado no dataset COCO não possui classes nativas para SUV
-ou Picape — apenas `car` e `truck`. A solução implementa heurística de área relativa
-(`bbox_area / frame_area`) e aspect ratio para inferir a subcategoria.
+*FPS medido pelo `_FpsMeter` do `main.py`. O `benchmark_ocr.py` reporta FPS
+diferente por variações de timing com threads OCR ativas.
 
-Em câmera com ângulo bird's eye alto (como o vídeo deste desafio), SUVs e sedans
-apresentam proporções similares vistas de cima, limitando a precisão desta heurística
-a ~55% para SUV/Picape. A solução definitiva exigiria fine-tuning com dataset rotulado
-de trânsito brasileiro (~2.000 imagens anotadas, estimativa de 2–4 dias de trabalho).
-
-Os thresholds `suv_aspect_ratio_threshold` e `suv_area_threshold` são configuráveis
-via `config/settings.yaml` para calibração por câmera específica.
-
-### Detecção de Motocicletas
-
-Motocicletas têm bounding box pequena e são descartadas por thresholds de confiança
-padrão. Foi implementado threshold assimétrico (`motorcycle_threshold: 0.35` vs
-`default_class_threshold: 0.45`) que recuperou 22% das motos adicionais sem impactar
-a precisão nas demais classes.
-
-Ground truth manual (análise quadro a quadro do vídeo de teste):
-
-| Classe | Ground Truth | Sistema (v1.1.2) | Recall |
-|---|---|---|---|
-| Sedan/Hatch | 60 | 57 | 95% |
-| SUV/Picape | 20 | 11 | 55% |
-| Caminhão/Ônibus | 14 | 24* | — |
-| Motocicleta | 18 | 11 | 61% |
-| **Total** | **112** | **103** | **92%** |
-
-*Caminhões sobrecontados absorvem SUVs/Picapes não diferenciadas pelo COCO.
-
-### Performance em CPU
-
-O pipeline processa a ~6.3 FPS em CPU (vídeo 1920×1080). Em GPU (RTX 3060+) a
-estimativa é 40–60 FPS com YOLOv8s. O parâmetro `realtime: false` no `settings.yaml`
-garante processamento de 100% dos frames em vídeos gravados, priorizando precisão
-sobre velocidade.
+---
 
 ## Roadmap Técnico — Melhorias Identificadas
 
-### OCR de Placas (Alta Prioridade)
-- **Detecção dedicada de placas:** substituir crop do veículo por modelo YOLOv8n
-  fine-tunado para detecção de placa (disponível no Roboflow Universe com dataset
-  brasileiro). Aumentaria o crop de ~15px para ~80px de largura de placa.
-- **fast-plate-ocr:** substituir EasyOCR por modelo específico para padrão Mercosul.
-  Estimativa: taxa de leitura de 1/103 para ~30–40/103 veículos.
-
 ### Classificação de Veículos
-- **Fine-tuning YOLOv8:** anotar 2.000 crops do próprio vídeo com 
+- **Fine-tuning YOLOv8:** anotar 2.000 crops do próprio vídeo com
   sedan_hatch/suv_pickup/truck_bus e treinar cabeçalho de classificação.
   Estimativa: recall SUV/Picape de 55% para 85%+.
 
 ### Performance
-- **GPU:** pipeline passa de 6 FPS para 50+ FPS, resolvendo organicamente
-  os problemas de OCR (mais frames = mais chances de captura de placa).
-- **YOLOv8n vs YOLOv8s:** flag configurável já implementada via settings.yaml.
+- **GPU:** pipeline passa de ~4.5 FPS para 50+ FPS, resolvendo organicamente
+  os problemas de OCR em tempo real (mais frames = mais chances de captura de placa).
+- **fast-alpr CUDA:** com GPU disponível, o ONNX Runtime utiliza CUDAExecutionProvider
+  automaticamente, eliminando completamente a contenção de CPU.
 
 ## Demonstração do resultado
 
 O arquivo de vídeo processado excede o limite de tamanho do repositório.
 
-[Baixe ou assista ao vídeo processado](https://github.com/jonlucas33/desafio_Aeolus_Cloud/releases/download/v1.2.0/result.mp4)
+[Baixe ou assista ao vídeo processado](https://github.com/jonlucas33/desafio_Aeolus_Cloud/releases/download/v1.3.0/result_final.mp4)
 
 O arquivo `data/inputs/video_cortado.mp4` representa os primeiros 90 segundos
 do vídeo original. O corte facilita o clone e garante execução rápida via
@@ -394,37 +411,3 @@ Docker para avaliação, mantendo amostragem de todas as classes de veículos.
 
 ---
 
-## Limitações conhecidas e trade-offs arquiteturais
-
-### Classificação SUV/Picape vs Sedan/Hatch
-
-O YOLOv8 pré-treinado no COCO não possui classes nativas para SUV ou Picape.
-A solução implementa heurística de duas camadas (área relativa + aspect ratio)
-para inferir a subcategoria. Em câmera com ângulo bird's eye alto, SUVs e
-sedans apresentam proporções similares vistas de cima, limitando o recall
-desta heurística a ~55% para SUV/Picape nesta configuração de câmera.
-Os thresholds são ajustáveis via `config/settings.yaml`.
-
-### OCR de placas em CPU
-
-O pipeline principal processa ~6 FPS em CPU (vídeo 1920×1080), o que significa
-que o sistema avalia 1 a cada 5 frames do vídeo original (30 FPS). O OCR roda
-em thread assíncrona dedicada e não bloqueia o pipeline — porém, com menos
-frames avaliados, a janela de oportunidade para capturar o `best_crop` de uma
-placa legível é estreita. Em GPU (RTX 3060+) o pipeline atinge 40–60 FPS e
-esta limitação desaparece organicamente.
-
-### Precisão vs recall no OCR
-
-O sistema prioriza precisão: só persiste uma placa se passar pela validação
-regex do padrão Mercosul (`ABC1D23`) ou padrão antigo (`ABC1234`). Isso
-elimina leituras espúrias, mas reduz o recall. Das 103 detecções, 2 placas
-foram lidas com confiança suficiente: `FDV0615` e `PON4626`.
-
-### Recall de motocicletas
-
-Motocicletas têm bounding box pequena e são descartadas por thresholds de
-confiança padrão do YOLO. Implementamos threshold assimétrico
-(`motorcycle_threshold: 0.35` vs `default_class_threshold: 0.45`), recuperando
-~22% de motos adicionais. Ground truth manual: 18 motos no vídeo, 11 detectadas
-(61% de recall).
