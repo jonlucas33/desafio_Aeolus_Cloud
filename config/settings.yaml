@@ -28,12 +28,17 @@ counting:
 
 ocr:
   enabled: true
+  engine: "fast_alpr"                # "easyocr" | "fast_alpr"
   min_bbox_area_ratio: 0.005
   confidence_threshold: 0.20
   languages: ["pt", "en"]
+  # EasyOCR + PlateDetector (dois estágios)
   plate_detector_enabled: true
   plate_detector_weights: "models/license_plate_detector.pt"
   plate_detector_conf: 0.50
+  # fast-alpr (ONNX end-to-end)
+  alpr_detector_model: "yolo-v9-t-384-license-plate-end2end"
+  alpr_ocr_model: "cct-xs-v2-global-model"
 
 database:
   backend: "sqlite"

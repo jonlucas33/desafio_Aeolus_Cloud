@@ -203,37 +203,51 @@ def main() -> None:
     # ── OCR (opcional) ────────────────────────────────────────────────────
     ocr_worker: OCRWorker | None = None
     if settings.ocr.enabled:
-        use_gpu = settings.model.device == "cuda"
-        plate_ocr = PlateOCR(
-            languages=settings.ocr.languages,
-            gpu=use_gpu,
-            confidence_threshold=settings.ocr.confidence_threshold,
-        )
+        if settings.ocr.engine == "fast_alpr":
+            # Engine ONNX end-to-end — localiza e lê placa em um único passo
+            from src.ocr.fast_alpr_worker import FastAlprWorker
+            ocr_worker = FastAlprWorker(
+                ocr_queue=ocr_queue,
+                db_queue=db_queue,
+                stop_event=stop_event,
+                settings=settings.ocr,
+            )
+            logger.info("Engine OCR: fast-alpr (ONNX)")
+        else:
+            # Engine padrão: EasyOCR + PlateDetector (dois estágios)
+            use_gpu = settings.model.device == "cuda"
+            plate_ocr = PlateOCR(
+                languages=settings.ocr.languages,
+                gpu=use_gpu,
+                confidence_threshold=settings.ocr.confidence_threshold,
+            )
 
-        # Estágio 1: detector de placa (dois estágios)
-        plate_detector = None
-        if settings.ocr.plate_detector_enabled:
-            pd_weights = Path(settings.ocr.plate_detector_weights)
-            if pd_weights.exists():
-                from src.ocr.plate_detector import PlateDetector
-                plate_detector = PlateDetector(
-                    weights_path=str(pd_weights),
-                    conf_threshold=settings.ocr.plate_detector_conf,
-                )
-            else:
-                logger.warning(
-                    "PlateDetector habilitado mas modelo não encontrado: %s — "
-                    "OCR de dois estágios desabilitado; execute "
-                    "python scripts/download_plate_model.py para baixar o modelo",
-                    pd_weights,
-                )
+            # Estágio 1: detector de placa dedicado
+            plate_detector = None
+            if settings.ocr.plate_detector_enabled:
+                pd_weights = Path(settings.ocr.plate_detector_weights)
+                if pd_weights.exists():
+                    from src.ocr.plate_detector import PlateDetector
+                    plate_detector = PlateDetector(
+                        weights_path=str(pd_weights),
+                        conf_threshold=settings.ocr.plate_detector_conf,
+                    )
+                else:
+                    logger.warning(
+                        "PlateDetector habilitado mas modelo não encontrado: %s — "
+                        "OCR de dois estágios desabilitado; execute "
+                        "python scripts/download_plate_model.py para baixar o modelo",
+                        pd_weights,
+                    )
 
-        ocr_worker = OCRWorker(
-            ocr_queue=ocr_queue,
-            db_queue=db_queue,
-            plate_ocr=plate_ocr,
-            plate_detector=plate_detector,
-        )
+            ocr_worker = OCRWorker(
+                ocr_queue=ocr_queue,
+                db_queue=db_queue,
+                plate_ocr=plate_ocr,
+                plate_detector=plate_detector,
+            )
+            logger.info("Engine OCR: easyocr (dois estágios)")
+
         ocr_worker.start()
 
     # ── Estado de runtime ─────────────────────────────────────────────────
